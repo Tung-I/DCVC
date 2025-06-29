@@ -1,0 +1,38 @@
+{
+  "root_path": "results",
+  "test_classes": {
+    "flame_steak_xy": {
+      "test": 1,
+      "src_type": "png",
+      "base_path": "flame_steak/01_20",
+      "sequences": {
+        "xy": {"height":  2560, "width":   2560, "frames":  20, "intra_period": 1}
+      }
+    },
+    "flame_steak_xz": {
+      "test": 1,
+      "src_type": "png",
+      "base_path": "flame_steak/01_20",
+      "sequences": {
+        "xz": {"height":  2560, "width":   2560, "frames":  20, "intra_period": 1}
+      }
+    },
+    "flame_steak_yz": {
+      "test": 1,
+      "src_type": "png",
+      "base_path": "flame_steak/01_20",
+      "sequences": {
+        "yz": {"height":  2560, "width":   2560, "frames":  20, "intra_period": 1}
+      }
+    },
+    "flame_steak_density": {
+      "test": 1,
+      "src_type": "png",
+      "base_path": "flame_steak/01_20",
+      "sequences": {
+        "density": {"height":  3840, "width":   4096, "frames":  20, "intra_period": 1}
+      }
+    }
+  }
+}
+

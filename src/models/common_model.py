@@ -294,3 +294,264 @@ class CompressionModel(nn.Module):
         y_hat = y_hat_so_far * quant_step
 
         return y_hat
+
+
+    # Lingdong Wang modification
+    @staticmethod
+    def probs_to_bits(probs):
+        bits = -1.0 * torch.log(probs + 1e-5) / math.log(2.0)
+        bits = torch.clamp_min(bits, 0)
+        return bits
+
+    def get_y_gaussian_bits(self, y, sigma):
+        mu = torch.zeros_like(sigma)
+        sigma = sigma.clamp(1e-5, 1e10)
+        gaussian = torch.distributions.normal.Normal(mu, sigma)
+        probs = gaussian.cdf(y + 0.5) - gaussian.cdf(y - 0.5)
+        return self.probs_to_bits(probs)
+
+    def get_y_laplace_bits(self, y, sigma):
+        mu = torch.zeros_like(sigma)
+        sigma = sigma.clamp(1e-5, 1e10)
+        gaussian = torch.distributions.laplace.Laplace(mu, sigma)
+        probs = gaussian.cdf(y + 0.5) - gaussian.cdf(y - 0.5)
+        return self.probs_to_bits(probs)
+
+    def get_z_bits(self, z, bit_estimator, qp):
+        probs = bit_estimator.get_cdf(z + 0.5, qp) - bit_estimator.get_cdf(z - 0.5, qp)
+        return self.probs_to_bits(probs)
+
+    @staticmethod
+    def quantize(x, method="ste"):
+        if method == "uniform":
+            noise = torch.nn.init.uniform_(torch.zeros_like(x), -0.5, 0.5)
+            x_hat = x + noise
+        elif method == "ste":
+            # Straight-through estimator
+            x_hat = x + (torch.round(x) - x).detach()
+        elif method == "round":
+            x_hat = torch.round(x)
+        else:
+            raise ValueError("Unknown quantization method {}".format(method))
+        x_hat = torch.clamp(x_hat, -128., 127.)
+        return x_hat
+
+    def process_with_mask_diff(self, y, scales, means, mask, force_zero_thres):
+        scales_hat = scales * mask
+        means_hat = means * mask
+
+        y_res = (y - means_hat) * mask
+        y_q = self.quantize(y_res)
+        if force_zero_thres is not None:
+            cond = scales_hat > force_zero_thres
+            y_q = y_q * cond
+        y_q = torch.clamp(y_q, -128., 127.)
+        y_hat = y_q + means_hat
+
+        return y_res, y_q, y_hat, scales_hat
+
+    def compress_prior_4x_diff(self, y, common_params, y_spatial_prior_reduction,
+                               y_spatial_prior_adaptor_1, y_spatial_prior_adaptor_2,
+                               y_spatial_prior_adaptor_3, y_spatial_prior):
+        """
+        Differentiable version of compress_prior_4x for training.
+        Replaces actual quantization with STE and calculates bit rates.
+
+        Args:
+            y: The input tensor to be compressed
+            common_params: Common parameters for the model
+            y_spatial_prior_reduction: Spatial prior reduction layer
+            y_spatial_prior_adaptor_1/2/3: Spatial prior adaptor layers
+            y_spatial_prior: Spatial prior layer
+
+        Returns:
+            y_hat: The reconstructed tensor
+            bits: Estimated bits for rate calculation
+        """
+        q_enc, q_dec, scales, means = self.separate_prior(common_params, False)
+        common_params = y_spatial_prior_reduction(common_params)
+        dtype = y.dtype
+        device = y.device
+        B, C, H, W = y.size()
+        mask_0, mask_1, mask_2, mask_3 = self.get_mask_4x(B, C, H, W, dtype, device)
+
+        y = y * q_enc
+
+        # First mask
+        y_res_0, y_q_0, y_hat_0, scales_hat_0 = self.process_with_mask_diff(y, scales, means, mask_0, None)
+        y_hat_so_far = y_hat_0
+
+        # Calculate bits for the first mask
+        bits_0 = self.get_y_gaussian_bits(y_q_0, scales_hat_0)
+
+        # Second mask
+        params = torch.cat((y_hat_so_far, common_params), dim=1)
+        scales, means = y_spatial_prior(y_spatial_prior_adaptor_1(params)).chunk(2, 1)
+        y_res_1, y_q_1, y_hat_1, scales_hat_1 = self.process_with_mask_diff(y, scales, means, mask_1, None)
+        y_hat_so_far = y_hat_so_far + y_hat_1
+
+        # Calculate bits for the second mask
+        bits_1 = self.get_y_gaussian_bits(y_q_1, scales_hat_1)
+
+        # Third mask
+        params = torch.cat((y_hat_so_far, common_params), dim=1)
+        scales, means = y_spatial_prior(y_spatial_prior_adaptor_2(params)).chunk(2, 1)
+        y_res_2, y_q_2, y_hat_2, scales_hat_2 = self.process_with_mask_diff(y, scales, means, mask_2, None)
+        y_hat_so_far = y_hat_so_far + y_hat_2
+
+        # Calculate bits for the third mask
+        bits_2 = self.get_y_gaussian_bits(y_q_2, scales_hat_2)
+
+        # Fourth mask
+        params = torch.cat((y_hat_so_far, common_params), dim=1)
+        scales, means = y_spatial_prior(y_spatial_prior_adaptor_3(params)).chunk(2, 1)
+        y_res_3, y_q_3, y_hat_3, scales_hat_3 = self.process_with_mask_diff(y, scales, means, mask_3, None)
+
+        # Calculate bits for the fourth mask
+        bits_3 = self.get_y_gaussian_bits(y_q_3, scales_hat_3)
+
+        # Final reconstruction
+        y_hat = y_hat_so_far + y_hat_3
+        y_hat = y_hat * q_dec
+
+        # Compute total bits
+        bits = bits_0 + bits_1 + bits_2 + bits_3
+
+        return y_hat, bits
+
+    def decompress_prior_4x_diff(self, common_params, y_spatial_prior_reduction,
+                                 y_spatial_prior_adaptor_1, y_spatial_prior_adaptor_2,
+                                 y_spatial_prior_adaptor_3, y_spatial_prior):
+        """
+        Differentiable version of decompress_prior_4x for training.
+        This version mimics the reconstruction process but keeps gradients flowing.
+
+        Args:
+            common_params: Common parameters for the model
+            y_spatial_prior_reduction: Spatial prior reduction layer
+            y_spatial_prior_adaptor_1/2/3: Spatial prior adaptor layers
+            y_spatial_prior: Spatial prior layer
+
+        Returns:
+            y_hat: The reconstructed tensor
+        """
+        _, quant_step, scales, means = self.separate_prior(common_params, False)
+        common_params = y_spatial_prior_reduction(common_params)
+        dtype = means.dtype
+        device = means.device
+        B, C, H, W = means.size()
+        mask_0, mask_1, mask_2, mask_3 = self.get_mask_4x(B, C, H, W, dtype, device)
+
+        # Simulate first decompression step with STE
+        scales_masked = scales * mask_0
+        y_res = torch.zeros_like(scales_masked)
+        y_q = self.quantize(y_res, method="ste")
+        y_hat_curr_step = y_q + means * mask_0
+        y_hat_so_far = y_hat_curr_step
+
+        # Second step
+        params = torch.cat((y_hat_so_far, common_params), dim=1)
+        scales, means = y_spatial_prior(y_spatial_prior_adaptor_1(params)).chunk(2, 1)
+        scales_masked = scales * mask_1
+        y_res = torch.zeros_like(scales_masked)
+        y_q = self.quantize(y_res, method="ste")
+        y_hat_curr_step = y_q + means * mask_1
+        y_hat_so_far = y_hat_so_far + y_hat_curr_step
+
+        # Third step
+        params = torch.cat((y_hat_so_far, common_params), dim=1)
+        scales, means = y_spatial_prior(y_spatial_prior_adaptor_2(params)).chunk(2, 1)
+        scales_masked = scales * mask_2
+        y_res = torch.zeros_like(scales_masked)
+        y_q = self.quantize(y_res, method="ste")
+        y_hat_curr_step = y_q + means * mask_2
+        y_hat_so_far = y_hat_so_far + y_hat_curr_step
+
+        # Fourth step
+        params = torch.cat((y_hat_so_far, common_params), dim=1)
+        scales, means = y_spatial_prior(y_spatial_prior_adaptor_3(params)).chunk(2, 1)
+        scales_masked = scales * mask_3
+        y_res = torch.zeros_like(scales_masked)
+        y_q = self.quantize(y_res, method="ste")
+        y_hat_curr_step = y_q + means * mask_3
+        y_hat_so_far = y_hat_so_far + y_hat_curr_step
+
+        # Apply quantization step
+        y_hat = y_hat_so_far * quant_step
+
+        return y_hat
+
+    def compress_prior_2x_diff(self, y, common_params, y_spatial_prior):
+        """
+        Differentiable version of compress_prior_2x for training.
+
+        Args:
+            y: The input tensor to be compressed
+            common_params: Common parameters for the model
+            y_spatial_prior: Spatial prior module
+
+        Returns:
+            y_hat: The reconstructed tensor
+            bits: Estimated bits for rate calculation
+        """
+        # Extract parameters from common_params
+        y, q_dec, scales, means = self.separate_prior_for_video_encoding_diff(common_params, y)
+        dtype = y.dtype
+        device = y.device
+        B, C, H, W = y.size()
+        mask_0, mask_1 = self.get_mask_2x(B, C, H, W, dtype, device)
+
+        # First mask processing
+        scales_0 = scales * mask_0
+        means_0 = means * mask_0
+        y_res_0 = (y - means_0) * mask_0
+        y_q_0 = self.quantize(y_res_0, method="ste")
+        y_hat_0 = y_q_0 + means_0
+
+        # Calculate bits for first mask
+        bits_0 = self.get_y_gaussian_bits(y_q_0, scales_0)
+
+        # Second mask processing with spatial prior
+        cat_params = torch.cat((y_hat_0, common_params), dim=1)
+        scales_1, means_1 = y_spatial_prior(cat_params).chunk(2, 1)
+        scales_1 = scales_1 * mask_1
+        means_1 = means_1 * mask_1
+        y_res_1 = (y - means_1) * mask_1
+        y_q_1 = self.quantize(y_res_1, method="ste")
+        y_hat_1 = y_q_1 + means_1
+
+        # Calculate bits for second mask
+        bits_1 = self.get_y_gaussian_bits(y_q_1, scales_1)
+
+        # Combine the results
+        y_hat = add_and_multiply(y_hat_0, y_hat_1, q_dec)
+        bits = bits_0 + bits_1
+
+        return y_hat, bits
+
+    def separate_prior_for_video_encoding_diff(self, params, y):
+        """
+        Differentiable version of separate_prior_for_video_encoding.
+        Uses STE for quantization operations.
+
+        Args:
+            params: Model parameters containing quantization step, scales, and means
+            y: Input tensor
+
+        Returns:
+            y: Quantized input
+            q_dec: Dequantization factor
+            scales: Scale parameters
+            means: Mean parameters
+        """
+        # Extract parameters
+        q_dec, scales, means = params.chunk(3, 1)
+
+        # Ensure minimum quantization step size while maintaining differentiability
+        q_dec = torch.clamp_min(q_dec, 0.5)
+
+        # Apply quantization using reciprocal of q_dec
+        q_enc = 1.0 / q_dec
+        y = y * q_enc
+
+        return y, q_dec, scales, means

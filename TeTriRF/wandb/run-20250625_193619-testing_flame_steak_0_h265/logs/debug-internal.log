@@ -1,0 +1,15 @@
+{"time":"2025-06-25T19:36:19.961110412Z","level":"INFO","msg":"stream: starting","core version":"0.20.1","symlink path":"/work/pi_rsitaram_umass_edu/tungi/DCVC/TeTriRF/wandb/run-20250625_193619-testing_flame_steak_0_h265/logs/debug-core.log"}
+{"time":"2025-06-25T19:36:20.213867506Z","level":"INFO","msg":"stream: created new stream","id":"testing_flame_steak_0_h265"}
+{"time":"2025-06-25T19:36:20.213916515Z","level":"INFO","msg":"stream: started","id":"testing_flame_steak_0_h265"}
+{"time":"2025-06-25T19:36:20.213999329Z","level":"INFO","msg":"writer: Do: started","stream_id":"testing_flame_steak_0_h265"}
+{"time":"2025-06-25T19:36:20.214082762Z","level":"INFO","msg":"sender: started","stream_id":"testing_flame_steak_0_h265"}
+{"time":"2025-06-25T19:36:20.214170285Z","level":"INFO","msg":"handler: started","stream_id":"testing_flame_steak_0_h265"}
+{"time":"2025-06-25T19:36:20.596801683Z","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-06-25T19:36:23.981952352Z","level":"INFO","msg":"stream: closing","id":"testing_flame_steak_0_h265"}
+{"time":"2025-06-25T19:36:23.982063855Z","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-06-25T19:36:23.98232546Z","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-06-25T19:36:24.383433227Z","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-06-25T19:36:24.528015735Z","level":"INFO","msg":"handler: closed","stream_id":"testing_flame_steak_0_h265"}
+{"time":"2025-06-25T19:36:24.528089529Z","level":"INFO","msg":"sender: closed","stream_id":"testing_flame_steak_0_h265"}
+{"time":"2025-06-25T19:36:24.528076429Z","level":"INFO","msg":"writer: Close: closed","stream_id":"testing_flame_steak_0_h265"}
+{"time":"2025-06-25T19:36:24.529188447Z","level":"INFO","msg":"stream: closed","id":"testing_flame_steak_0_h265"}

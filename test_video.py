@@ -25,6 +25,14 @@ from src.utils.video_writer import PNGWriter, YUV420Writer
 from src.utils.metrics import calc_psnr, calc_msssim, calc_msssim_rgb
 from src.utils.transforms import rgb2ycbcr, ycbcr2rgb, yuv_444_to_420, ycbcr420_to_444_np
 
+"""
+Usage:
+    python test_video.py --model_path_i ./checkpoints/cvpr2025_image.pth.tar \
+        --model_path_p ./checkpoints/cvpr2025_video.pth.tar --rate_num 2 --test_config configs/test.json \
+        --cuda 1 -w 1 --write_stream 1 --force_zero_thres 0.12 --output_path output.json \
+        --force_intra_period -1 --reset_interval 64 --force_frame_num -1 --check_existing 0 \
+        --verbose 2 --save_decoded_frame 1
+"""
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Example testing script")
@@ -58,7 +66,8 @@ def parse_args():
 
 
 def np_image_to_tensor(img, device):
-    image = torch.from_numpy(img).to(device=device).to(dtype=torch.float32) / 255.0
+    # image = torch.from_numpy(img).to(device=device).to(dtype=torch.float32) / 255.0
+    image = torch.from_numpy(img).to(device=device).to(dtype=torch.float32)
     image = image.unsqueeze(0)
     return image
 
@@ -83,10 +92,9 @@ def get_src_frame(args, src_reader, device):
     else:
         assert args['src_type'] == 'png'
         rgb = src_reader.read_one_frame()
-        x = np_image_to_tensor(rgb, device)
+        x = np_image_to_tensor(rgb, device) # in [0, 1] scale
         x = rgb2ycbcr(x)
         y, u, v = None, None, None
-
     x = x.to(torch.float16)
     return x, y, u, v, rgb
 
@@ -116,7 +124,8 @@ def get_distortion(args, x_hat, y, u, v, rgb):
     else:
         assert args['src_type'] == 'png'
         rgb_rec = ycbcr2rgb(x_hat)
-        rgb_rec = torch.clamp(rgb_rec * 255, 0, 255).squeeze(0).cpu().numpy()
+        # rgb_rec = torch.clamp(rgb_rec * 255, 0, 255).squeeze(0).cpu().numpy()
+        rgb_rec = rgb_rec.squeeze(0).cpu().numpy()
         psnr = calc_psnr(rgb, rgb_rec)
         if args['calc_ssim']:
             msssim = calc_msssim_rgb(rgb, rgb_rec)
@@ -242,6 +251,9 @@ def run_one_point_with_stream(p_frame_net, i_frame_net, args):
     total_kbps = int(total_bytes * 8 / (frame_num / 30) / 1000)  # assume 30 fps
     output_buff.close()
     sps_helper = SPSHelper()
+
+
+    # decoding
     input_file = open(args['curr_bin_path'], "rb")
     with open(args['curr_bin_path'], "rb") as input_file:
         input_buff = io.BytesIO(input_file.read())
@@ -312,10 +324,13 @@ def run_one_point_with_stream(p_frame_net, i_frame_net, args):
                     recon_writer.write_one_frame(y_rec, uv_rec)
                 else:
                     assert args['src_type'] == 'png'
+                    # print(f"rgb_rec: {rgb_rec.dtype}, {rgb_rec.min()}, {rgb_rec.max()}")
                     rgb_rec = ycbcr2rgb(x_hat)
-                    rgb_rec = torch.clamp(rgb_rec * 255, 0, 255).round().to(dtype=torch.uint8)
+                    # print(f"rgb_rec (after rcbcr): {rgb_rec.dtype}, {rgb_rec.min()}, {rgb_rec.max()}")
+                    # rgb_rec = torch.clamp(rgb_rec * 255, 0, 255).round().to(dtype=torch.uint8)
+                    rgb_rec = torch.clamp(rgb_rec * 65535, 0, 65535).round().to(dtype=torch.uint16)
                     rgb_rec = rgb_rec.squeeze(0).cpu().numpy()
-                    recon_writer.write_one_frame(rgb_rec)
+                    recon_writer.write_one_frame(rgb_rec, qp=qp)
             decoded_frame_number += 1
     input_buff.close()
     src_reader.close()

@@ -7,3 +7,12 @@ build/
 *.tar
 *.pyd
 *.egg-info
+
+checkpoints/*
+results/*
+logs/*
+data/*
+
+TeTriRF/logs/*
+TeTriRF/results/*
+data/*

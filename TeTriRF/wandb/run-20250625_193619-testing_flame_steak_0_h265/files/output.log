@@ -1,0 +1,22 @@
+/work/pi_rsitaram_umass_edu/tungi/conda/envs/dcvc/lib/python3.12/site-packages/torch/__init__.py:1240: UserWarning: torch.set_default_tensor_type() is deprecated as of PyTorch 2.1, please use torch.set_default_dtype() and torch.set_default_device() as alternatives. (Triggered internally at /pytorch/torch/csrc/tensor/python_tensor.cpp:434.)
+  _C._set_default_tensor_type(t)
+/work/pi_rsitaram_umass_edu/tungi/conda/envs/dcvc/lib/python3.12/site-packages/torch/utils/data/dataloader.py:626: UserWarning: This DataLoader will create 12 worker processes in total. Our suggested max number of worker in current system is 6, which is smaller than what this DataLoader is going to create. Please be aware that excessive worker creation might get DataLoader running slow or even freeze, lower the worker number to avoid potential slowness/freeze if necessary.
+  warnings.warn(
+Loaded llff (21, 676, 901, 3) (97, 3, 5) [676.     901.     487.3557] /home/tungichen_umass_edu/TeTriRF/data/n3d/flame_steak/llff/
+DEFINING BOUNDS
+NEAR FAR 0.0 1.0
+Traceback (most recent call last):
+  File "/work/pi_rsitaram_umass_edu/tungi/DCVC/TeTriRF/render.py", line 389, in <module>
+    model = utils.load_model(model_class, ckpt_path).to(device)
+            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/pi_rsitaram_umass_edu/tungi/DCVC/TeTriRF/lib/utils.py", line 118, in load_model
+    ckpt = torch.load(ckpt_path)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/work/pi_rsitaram_umass_edu/tungi/conda/envs/dcvc/lib/python3.12/site-packages/torch/serialization.py", line 1524, in load
+    raise pickle.UnpicklingError(_get_wo_message(str(e))) from None
+_pickle.UnpicklingError: Weights only load failed. This file can still be loaded, to do so you have two options, [1mdo those steps only if you trust the source of the checkpoint[0m.
+	(1) In PyTorch 2.6, we changed the default value of the `weights_only` argument in `torch.load` from `False` to `True`. Re-running `torch.load` with `weights_only` set to `False` will likely succeed, but it can result in arbitrary code execution. Do it only if you got the file from a trusted source.
+	(2) Alternatively, to load with `weights_only=True` please check the recommended steps in the following error message.
+	WeightsUnpickler error: Unsupported global: GLOBAL numpy.core.multiarray._reconstruct was not an allowed global by default. Please use `torch.serialization.add_safe_globals([numpy.core.multiarray._reconstruct])` or the `torch.serialization.safe_globals([numpy.core.multiarray._reconstruct])` context manager to allowlist this global if you trust this class/function.
+
+Check the documentation of torch.load to learn more about types accepted by default with weights_only https://pytorch.org/docs/stable/generated/torch.load.html.

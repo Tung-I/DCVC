@@ -1,0 +1,37 @@
+2025-06-25 20:38:55,070 INFO    MainThread:1406789 [wandb_setup.py:_flush():81] Current SDK version is 0.20.1
+2025-06-25 20:38:55,071 INFO    MainThread:1406789 [wandb_setup.py:_flush():81] Configure stats pid to 1406789
+2025-06-25 20:38:55,071 INFO    MainThread:1406789 [wandb_setup.py:_flush():81] Loading settings from /home/tungichen_umass_edu/.config/wandb/settings
+2025-06-25 20:38:55,071 INFO    MainThread:1406789 [wandb_setup.py:_flush():81] Loading settings from /work/pi_rsitaram_umass_edu/tungi/DCVC/TeTriRF/wandb/settings
+2025-06-25 20:38:55,071 INFO    MainThread:1406789 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2025-06-25 20:38:55,071 INFO    MainThread:1406789 [wandb_init.py:setup_run_log_directory():703] Logging user logs to /work/pi_rsitaram_umass_edu/tungi/DCVC/TeTriRF/wandb/run-20250625_203855-flame_steak/logs/debug.log
+2025-06-25 20:38:55,071 INFO    MainThread:1406789 [wandb_init.py:setup_run_log_directory():704] Logging internal logs to /work/pi_rsitaram_umass_edu/tungi/DCVC/TeTriRF/wandb/run-20250625_203855-flame_steak/logs/debug-internal.log
+2025-06-25 20:38:55,071 INFO    MainThread:1406789 [wandb_init.py:init():831] calling init triggers
+2025-06-25 20:38:55,072 INFO    MainThread:1406789 [wandb_init.py:init():836] wandb.init called with sweep_config: {}
+config: {'configs': Config (path: configs/N3D/flame_steak.py): {'expname': 'flame_steak', 'basedir': './logs/', 'data': {'datadir': './data/n3d/flame_steak/llff/', 'dataset_type': 'llff', 'inverse_y': False, 'flip_x': False, 'flip_y': False, 'annot_path': '', 'split_path': '', 'sequence_name': '', 'load2gpu_on_the_fly': True, 'testskip': 1, 'white_bkgd': False, 'rand_bkgd': False, 'half_res': False, 'bd_factor': 0.75, 'movie_render_kwargs': {}, 'ndc': True, 'spherify': False, 'factor': 3, 'width': 960, 'height': 720, 'llffhold': 8, 'load_depths': False, 'unbounded_inward': False, 'unbounded_inner_r': 1.0, 'frame_ids': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19], 'xyz_min': [-1.4, -1.4, -0.6], 'xyz_max': [1.4, 1.4, 0.6], 'test_frames': [0]}, 'coarse_train': {'N_iters': 0, 'N_rand': 10240, 'lrate_density': 0.1, 'lrate_k0': 0.1, 'lrate_rgbnet': 0.001, 'lrate_decay': 20, 'pervoxel_lr': True, 'pervoxel_lr_downrate': 1, 'ray_sampler': 'random', 'weight_main': 1.0, 'weight_entropy_last': 0.01, 'weight_nearclip': 0, 'weight_distortion': 0, 'weight_l1_loss': 0.1, 'weight_rgbper': 0.1, 'tv_every': 1, 'tv_after': 0, 'tv_before': 0, 'tv_dense_before': 0, 'weight_tv_density': 0.0, 'weight_tv_k0': 0.0, 'pg_scale': [], 'decay_after_scale': 1.0, 'skip_zero_grad_fields': [], 'maskout_lt_nviews': 0, 'initialize_density': False, 'initialize_feature': True}, 'fine_train': {'N_iters': 32000, 'N_rand': 5000, 'lrate_density': 0.1, 'lrate_k0': 0.1, 'lrate_rgbnet': 0.0002, 'lrate_decay': 20, 'pervoxel_lr': False, 'pervoxel_lr_downrate': 1, 'ray_sampler': 'flatten', 'weight_main': 1.0, 'weight_entropy_last': 0.001, 'weight_nearclip': 0, 'weight_distortion': 0.0015, 'weight_l1_loss': 0.01, 'weight_rgbper': 0.01, 'tv_every': 1, 'tv_after': 100, 'tv_before': 25000, 'tv_dense_before': 25000, 'weight_tv_density': 0, 'weight_tv_k0': 0, 'pg_scale': [2000, 3500, 5000, 6000], 'decay_after_scale': 1.0, 'skip_zero_grad_fields': ['density', 'k0'], 'maskout_lt_nviews': 0, 'initialize_density': True, 'initialize_feature': True, 'pg_scale2': [6500, 9000, 11000], 'maskout_iter': 1000000}, 'coarse_model_and_render': {'num_voxels': 1024000, 'num_voxels_base': 1024000, 'density_type': 'DenseGrid', 'k0_type': 'DenseGrid', 'grid_multiplier': 2, 'density_config': {}, 'k0_config': {'factor': 3}, 'mpi_depth': 128, 'nearest': False, 'pre_act_density': False, 'in_act_density': False, 'bbox_thres': 0.001, 'mask_cache_thres': 0.001, 'rgbnet_dim': 0, 'rgbnet_full_implicit': False, 'rgbnet_direct': True, 'rgbnet_depth': 3, 'rgbnet_width': 128, 'alpha_init': 1e-06, 'fast_color_thres': 1e-07, 'maskout_near_cam_vox': True, 'world_bound_scale': 1, 'stepsize': 0.5, 'RGB_model': 'MLP', 'dynamic_rgbnet': False, 'viewbase_pe': 4, 'plane_scale': 3}, 'fine_model_and_render': {'num_voxels': 9261000, 'num_voxels_base': 9261000, 'density_type': 'DenseGrid', 'k0_type': 'PlaneGrid', 'grid_multiplier': 2, 'density_config': {}, 'k0_config': {'factor': 3}, 'mpi_depth': 280, 'nearest': False, 'pre_act_density': False, 'in_act_density': False, 'bbox_thres': 0.001, 'mask_cache_thres': 0.001, 'rgbnet_dim': 30, 'rgbnet_full_implicit': False, 'rgbnet_direct': True, 'rgbnet_depth': 3, 'rgbnet_width': 128, 'alpha_init': 0.01, 'fast_color_thres': 4.8828125e-05, 'maskout_near_cam_vox': False, 'world_bound_scale': 1.05, 'stepsize': 1, 'RGB_model': 'MLP', 'dynamic_rgbnet': True, 'viewbase_pe': 2, 'plane_scale': 3}, '_k': 1}, 'args': Namespace(config='configs/N3D/flame_steak.py', seed=777, no_reload=False, no_reload_optimizer=False, ft_path='', training_mode=1, frame_ids=[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19], render_only=False, render_video_flipy=False, render_video_rot90=0, render_video_factor=0, dump_images=False, eval_ssim=False, eval_lpips_alex=False, eval_lpips_vgg=False, i_print=500, i_weights=100000), '_wandb': {}}
+2025-06-25 20:38:55,072 INFO    MainThread:1406789 [wandb_init.py:init():872] starting backend
+2025-06-25 20:38:55,305 INFO    MainThread:1406789 [wandb_init.py:init():875] sending inform_init request
+2025-06-25 20:38:55,315 INFO    MainThread:1406789 [wandb_init.py:init():883] backend started and connected
+2025-06-25 20:38:55,319 INFO    MainThread:1406789 [wandb_init.py:init():956] updated telemetry
+2025-06-25 20:38:55,344 INFO    MainThread:1406789 [wandb_init.py:init():980] communicating run to backend with 90.0 second timeout
+2025-06-25 20:39:47,357 WARNING MainThread:1406789 [wandb_init.py:init():1613] [no run ID] interrupted
+Traceback (most recent call last):
+  File "/work/pi_rsitaram_umass_edu/tungi/conda/envs/dcvc/lib/python3.12/site-packages/wandb/sdk/wandb_init.py", line 1609, in init
+    return wi.init(run_settings, run_config, run_printer)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/pi_rsitaram_umass_edu/tungi/conda/envs/dcvc/lib/python3.12/site-packages/wandb/sdk/wandb_init.py", line 999, in init
+    result = wait_with_progress(
+             ^^^^^^^^^^^^^^^^^^^
+  File "/work/pi_rsitaram_umass_edu/tungi/conda/envs/dcvc/lib/python3.12/site-packages/wandb/sdk/mailbox/wait_with_progress.py", line 24, in wait_with_progress
+    return wait_all_with_progress(
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/pi_rsitaram_umass_edu/tungi/conda/envs/dcvc/lib/python3.12/site-packages/wandb/sdk/mailbox/wait_with_progress.py", line 87, in wait_all_with_progress
+    return asyncio_compat.run(progress_loop_with_timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/work/pi_rsitaram_umass_edu/tungi/conda/envs/dcvc/lib/python3.12/site-packages/wandb/sdk/lib/asyncio_compat.py", line 30, in run
+    return future.result()
+           ^^^^^^^^^^^^^^^
+  File "/work/pi_rsitaram_umass_edu/tungi/conda/envs/dcvc/lib/python3.12/concurrent/futures/_base.py", line 451, in result
+    self._condition.wait(timeout)
+  File "/work/pi_rsitaram_umass_edu/tungi/conda/envs/dcvc/lib/python3.12/threading.py", line 355, in wait
+    waiter.acquire()
+KeyboardInterrupt

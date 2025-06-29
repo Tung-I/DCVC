@@ -207,3 +207,64 @@ class DMCI(CompressionModel):
 
         x_hat = self.dec(y_hat, curr_q_dec).clamp_(0, 1)
         return {"x_hat": x_hat}
+
+
+    # Lingdong Wang modification starts
+    def forward(self, x, qp):
+        """
+            Forward function for training the DMCI model.
+
+            Args:
+                x: Input image tensor
+                qp: Quality parameter index
+
+            Returns:
+                Dictionary containing reconstructed image, bit rates, and other metrics
+            """
+        curr_q_enc = self.q_scale_enc[qp:qp + 1, :, :, :]
+        curr_q_dec = self.q_scale_dec[qp:qp + 1, :, :, :]
+
+        # Encoding
+        y = self.enc(x, curr_q_enc)
+        # import pdb; pdb.set_trace()
+        # #----Apply random zero masking to the encoded tesnor y---#
+        # if inject_loss and loss_rate > 0:
+        #     mask = (torch.rand_like(y))
+        # #--------------------------------------------------------#
+
+        y_pad = self.pad_for_y(y)
+        z = self.hyper_enc(y_pad)
+
+        # z quantization using STE
+        z_hat = self.quantize(z, method="ste")
+
+        # Calculate z bits
+        qp_tensor = torch.tensor(qp, device=x.device, dtype=torch.int32)
+        z_bits = self.get_z_bits(z_hat, self.bit_estimator_z, qp_tensor)
+
+        # Hyperprior decoding
+        params = self.hyper_dec(z_hat)
+        params = self.y_prior_fusion(params)
+        _, _, yH, yW = y.shape
+        params = params[:, :, :yH, :yW].contiguous()
+
+        # Differentiable compression and decompression of y
+        y_hat, y_bits = self.compress_prior_4x_diff(
+            y, params, self.y_spatial_prior_reduction,
+            self.y_spatial_prior_adaptor_1, self.y_spatial_prior_adaptor_2,
+            self.y_spatial_prior_adaptor_3, self.y_spatial_prior)
+
+        # Reconstruction
+        x_hat = self.dec(y_hat, curr_q_dec).clamp_(0, 1)
+
+        # Calculate total bits and bits per pixel (bpp)
+        total_bits = z_bits.sum() + y_bits.sum()
+        num_pixels = x.size(0) * x.size(2) * x.size(3)
+        bpp = total_bits / num_pixels
+
+        return {
+            "x_hat": x_hat,
+            "bpp": bpp,
+            "z_bpp": z_bits.sum() / num_pixels,
+            "y_bpp": y_bits.sum() / num_pixels,
+        }

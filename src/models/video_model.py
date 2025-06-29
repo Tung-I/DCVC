@@ -377,3 +377,68 @@ class DMC(CompressionModel):
 
     def shift_qp(self, qp, fa_idx):
         return qp + self.qp_shift[fa_idx]
+
+
+    # Lingdong Wang modification
+    def forward(self, x, qp):
+        """
+        Differentiable forward function for the DMC video compression model.
+
+        Args:
+            x: Input frame tensor (B, C, H, W)
+            qp: Quality parameter index
+
+        Returns:
+            Dictionary containing reconstructed frame, bit rates, and other metrics
+        """
+        device = x.device
+        # Get quantization parameters for the specified QP
+        q_encoder = self.q_encoder[qp:qp + 1, :, :, :]
+        q_decoder = self.q_decoder[qp:qp + 1, :, :, :]
+        q_feature = self.q_feature[qp:qp + 1, :, :, :]
+        q_recon = self.q_recon[qp:qp + 1, :, :, :]
+
+        # Extract features from reference frame (if available)
+        feature = self.apply_feature_adaptor()
+        ctx, ctx_t = self.feature_extractor(feature, q_feature)
+
+        # Encode the current frame
+        y = self.encoder(x, ctx, q_encoder)
+
+        # Pad y before hyperprior encoding
+        hyper_inp = self.pad_for_y(y)
+
+        # Hyperprior encoding
+        z = self.hyper_encoder(hyper_inp)
+
+        # Quantize z using the straight-through estimator for differentiability
+        z_hat = self.quantize(z, method="ste")
+
+        # Calculate z bits for rate estimation
+        qp_tensor = torch.tensor(qp, device=device, dtype=torch.int32)
+        z_bits = self.get_z_bits(z_hat, self.bit_estimator_z, qp_tensor)
+
+        # Hyperprior decoding to get prior parameters
+        params = self.res_prior_param_decoder(z_hat, ctx_t)
+
+        # Differentiable version of compress_prior_2x
+        y_hat, y_bits = self.compress_prior_2x_diff(y, params, self.y_spatial_prior)
+
+        # Decode to get reconstructed features and frame
+        feature_decoded = self.decoder(y_hat, ctx, q_decoder)
+        x_hat = self.recon_generation_net(feature_decoded, q_recon).clamp_(0, 1)
+
+        # Store the reconstructed feature in the DPB for next frame prediction
+        self.add_ref_frame(feature_decoded, None)
+
+        # Calculate total bits and bits per pixel (bpp)
+        total_bits = z_bits.sum() + y_bits.sum()
+        num_pixels = x.size(0) * x.size(2) * x.size(3)
+        bpp = total_bits / num_pixels
+
+        return {
+            "x_hat": x_hat,
+            "bpp": bpp,
+            "z_bpp": z_bits.sum() / num_pixels,
+            "y_bpp": y_bits.sum() / num_pixels,
+        }
