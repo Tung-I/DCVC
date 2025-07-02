@@ -11,17 +11,6 @@
         "xz_plane": {"height": 2560, "width":   2560, "frames":  20, "intra_period": 1},
         "yz_plane": {"height": 2560, "width":   2560, "frames":  20, "intra_period": 1}  
       }
-    },
-    "dcvc_planeimg_00_19_separate": { 
-      "test": 1,
-      "src_type": "png",
-      "base_path": "planeimg_00_19_separate",
-      "sequences": {
-        "density": {"height":  2560, "width":   4096, "frames":  20, "intra_period": 1},
-        "xy_plane": {"height": 2560, "width":   2560, "frames":  20, "intra_period": 1},
-        "xz_plane": {"height": 2560, "width":   2560, "frames":  20, "intra_period": 1},
-        "yz_plane": {"height": 2560, "width":   2560, "frames":  20, "intra_period": 1}  
-      }
     }
   }
 }

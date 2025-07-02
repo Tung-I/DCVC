@@ -15,7 +15,7 @@ class PNGWriter():
         self.current_frame_index = 1
         os.makedirs(dst_path, exist_ok=True)
 
-    def write_one_frame(self, frame, qp=None):
+    def write_one_frame(self, frame, qp=None, grayscale=False):
         """
         frame: 3×H×W numpy (float32 in [0,1], or uint16 already)
         We will extract one channel (they’re all identical), convert to uint16, and save.
@@ -34,7 +34,11 @@ class PNGWriter():
 
         # now arr is H×W×C with dtype uint16
         # pick one channel (all three are the same)
-        gray = arr[..., 0]  # H×W uint16
+        if grayscale:
+            img = arr[..., 0]  # H×W uint16
+        else:
+            img = arr
+            
         if qp is not None:
             fname = f"im{str(self.current_frame_index).zfill(self.padding)}_qp{qp}.png"
         else:
@@ -42,7 +46,7 @@ class PNGWriter():
         out_path = os.path.join(self.dst_path, fname)
 
         # cv2.imwrite will respect uint16
-        cv2.imwrite(out_path, gray)
+        cv2.imwrite(out_path, img)
 
         self.current_frame_index += 1
 

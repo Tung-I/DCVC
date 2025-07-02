@@ -27,11 +27,9 @@ from src.utils.transforms import rgb2ycbcr, ycbcr2rgb, yuv_444_to_420, ycbcr420_
 
 """
 Usage:
-    python test_video.py --model_path_i ./checkpoints/cvpr2025_image.pth.tar \
-        --model_path_p ./checkpoints/cvpr2025_video.pth.tar --rate_num 2 --test_config configs/test.json \
-        --cuda 1 -w 1 --write_stream 1 --force_zero_thres 0.12 --output_path output.json \
-        --force_intra_period -1 --reset_interval 64 --force_frame_num -1 --check_existing 0 \
-        --verbose 2 --save_decoded_frame 1
+    python test_video.py --model_path_i ./checkpoints/cvpr2025_image.pth.tar --model_path_p ./checkpoints/cvpr2025_video.pth.tar \
+        --rate_num 4 --test_config configs/flame_steak_00_19_separate.json  --force_zero_thres 0.12   --verbose 2 \
+            --save_decoded_frame 1 --stream_path logs/out_bin
 """
 
 def parse_args():
@@ -46,18 +44,18 @@ def parse_args():
     parser.add_argument("--force_intra", type=str2bool, default=False)
     parser.add_argument("--force_frame_num", type=int, default=-1)
     parser.add_argument("--force_intra_period", type=int, default=-1)
-    parser.add_argument('--reset_interval', type=int, default=32, required=False)
+    parser.add_argument('--reset_interval', type=int, default=64, required=False)
     parser.add_argument('--test_config', type=str, required=True)
     parser.add_argument('--force_root_path', type=str, default=None, required=False)
     parser.add_argument("--worker", "-w", type=int, default=1, help="worker number")
-    parser.add_argument("--cuda", type=str2bool, default=False)
+    parser.add_argument("--cuda", type=str2bool, default=True)
     parser.add_argument('--cuda_idx', type=int, nargs="+", help='GPU indexes to use')
     parser.add_argument('--calc_ssim', type=str2bool, default=False, required=False)
-    parser.add_argument('--write_stream', type=str2bool, default=False)
+    parser.add_argument('--write_stream', type=str2bool, default=True)
     parser.add_argument('--check_existing', type=str2bool, default=False)
     parser.add_argument('--stream_path', type=str, default="out_bin")
     parser.add_argument('--save_decoded_frame', type=str2bool, default=False)
-    parser.add_argument('--output_path', type=str, required=True)
+    parser.add_argument('--output_path', type=str, default="dcvc_output.json")
     parser.add_argument('--verbose_json', type=str2bool, default=False)
     parser.add_argument('--verbose', type=int, default=0)
 
@@ -75,6 +73,8 @@ def np_image_to_tensor(img, device):
 def get_src_reader(args):
     if args['src_type'] == 'png':
         src_reader = PNGReader(args['src_path'], args['src_width'], args['src_height'])
+    elif args['src_type'] == 'grayscale':
+        src_reader = PNGReader(args['src_path'], args['src_width'], args['src_height'])
     elif args['src_type'] == 'yuv420':
         src_reader = YUV420Reader(args['src_path'], args['src_width'], args['src_height'])
     return src_reader
@@ -89,6 +89,11 @@ def get_src_frame(args, src_reader, device):
         u = uv[0, :, :]
         v = uv[1, :, :]
         rgb = None
+    elif args['src_type'] == 'grayscale':
+        rgb = src_reader.read_one_frame()
+        x = np_image_to_tensor(rgb, device) # in [0, 1] scale
+        x = rgb2ycbcr(x)
+        y, u, v = None, None, None
     else:
         assert args['src_type'] == 'png'
         rgb = src_reader.read_one_frame()
@@ -122,7 +127,7 @@ def get_distortion(args, x_hat, y, u, v, rgb):
         curr_psnr = [psnr, psnr_y, psnr_u, psnr_v]
         curr_ssim = [ssim, ssim_y, ssim_u, ssim_v]
     else:
-        assert args['src_type'] == 'png'
+        assert args['src_type'] == 'png' or args['src_type'] == 'grayscale'
         rgb_rec = ycbcr2rgb(x_hat)
         # rgb_rec = torch.clamp(rgb_rec * 255, 0, 255).squeeze(0).cpu().numpy()
         rgb_rec = rgb_rec.squeeze(0).cpu().numpy()
@@ -261,8 +266,9 @@ def run_one_point_with_stream(p_frame_net, i_frame_net, args):
     src_reader = get_src_reader(args)
 
     if save_decoded_frame:
-        if args['src_type'] == 'png':
-            recon_writer = PNGWriter(args['bin_folder'], args['src_width'], args['src_height'])
+        png_out_folder = os.path.join(args['dataset_path'], f"dcvc_{args['seq']}_qp{curr_qp}")
+        if args['src_type'] == 'png' or args['src_type'] == 'grayscale':
+            recon_writer = PNGWriter(png_out_folder, args['src_width'], args['src_height'])
         elif args['src_type'] == 'yuv420':
             output_yuv_path = args['curr_rec_path'].replace('.yuv', f'_{total_kbps}kbps.yuv')
             recon_writer = YUV420Writer(output_yuv_path, args['src_width'], args['src_height'])
@@ -322,6 +328,12 @@ def run_one_point_with_stream(p_frame_net, i_frame_net, args):
                     uv_rec = torch.clamp(uv_rec * 255, 0, 255).to(dtype=torch.uint8)
                     uv_rec = uv_rec.squeeze(0).cpu().numpy()
                     recon_writer.write_one_frame(y_rec, uv_rec)
+                elif args['src_type'] == 'grayscale':
+                    rgb_rec = ycbcr2rgb(x_hat)
+                    rgb_rec = torch.clamp(rgb_rec * 65535, 0, 65535).round().to(dtype=torch.uint16)
+                    rgb_rec = rgb_rec.squeeze(0).cpu().numpy()
+                    recon_writer.write_one_frame(rgb_rec, grayscale=True)
+                
                 else:
                     assert args['src_type'] == 'png'
                     # print(f"rgb_rec: {rgb_rec.dtype}, {rgb_rec.min()}, {rgb_rec.max()}")
@@ -330,7 +342,7 @@ def run_one_point_with_stream(p_frame_net, i_frame_net, args):
                     # rgb_rec = torch.clamp(rgb_rec * 255, 0, 255).round().to(dtype=torch.uint8)
                     rgb_rec = torch.clamp(rgb_rec * 65535, 0, 65535).round().to(dtype=torch.uint16)
                     rgb_rec = rgb_rec.squeeze(0).cpu().numpy()
-                    recon_writer.write_one_frame(rgb_rec, qp=qp)
+                    recon_writer.write_one_frame(rgb_rec)
             decoded_frame_number += 1
     input_buff.close()
     src_reader.close()

@@ -1,0 +1,65 @@
+{
+  "root_path": "logs/out_triplane/flame_steak",
+  "test_classes": {
+    "dcvc_planeimg_00_19_separate_density": { 
+      "test": 1,
+      "src_type": "png",
+      "base_path": "planeimg_00_19_separate",
+      "sequences": {
+        "density": {"height":  2560, "width":   4096, "frames":  20, "intra_period": 1}
+      }
+    },
+    "dcvc_planeimg_00_19_separate_xy_plane": { 
+      "test": 1,
+      "src_type": "png",
+      "base_path": "planeimg_00_19_separate/xy_plane",
+      "sequences": {
+        "c0": {"height": 543, "width":   543, "frames":  20, "intra_period": 1},
+        "c1": {"height": 543, "width":   543, "frames":  20, "intra_period": 1},
+        "c2": {"height": 543, "width":   543, "frames":  20, "intra_period": 1},
+        "c3": {"height": 543, "width":   543, "frames":  20, "intra_period": 1},
+        "c4": {"height": 543, "width":   543, "frames":  20, "intra_period": 1},
+        "c5": {"height": 543, "width":   543, "frames":  20, "intra_period": 1},
+        "c6": {"height": 543, "width":   543, "frames":  20, "intra_period": 1},
+        "c7": {"height": 543, "width":   543, "frames":  20, "intra_period": 1},
+        "c8": {"height": 543, "width":   543, "frames":  20, "intra_period": 1},
+        "c9": {"height": 543, "width":   543, "frames":  20, "intra_period": 1}
+      }
+    },
+    "dcvc_planeimg_00_19_separate_xz_plane": { 
+      "test": 1,
+      "src_type": "png",
+      "base_path": "planeimg_00_19_separate/xz_plane",
+      "sequences": {
+        "c0": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c1": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c2": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c3": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c4": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c5": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c6": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c7": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c8": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c9": {"height": 543, "width":   840, "frames":  20, "intra_period": 1}
+      }
+    },
+    "dcvc_planeimg_00_19_separate_yz_plane": { 
+      "test": 1,
+      "src_type": "png",
+      "base_path": "planeimg_00_19_separate/yz_plane",
+      "sequences": {
+        "c0": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c1": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c2": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c3": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c4": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c5": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c6": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c7": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c8": {"height": 543, "width":   840, "frames":  20, "intra_period": 1},
+        "c9": {"height": 543, "width":   840, "frames":  20, "intra_period": 1}
+      }
+    }
+
+  }
+}

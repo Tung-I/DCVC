@@ -53,6 +53,8 @@ class PNGReader():
 
         # 3) now raw is H×W×3, dtype uint8 or uint16
         h, w, _ = raw.shape
+        if h != self.height or w != self.width:
+            raise ValueError(f"image size mismatch: expected {self.height}x{self.width}, got {h}x{w}")
         assert h == self.height and w == self.width
 
         # 4) normalize to float32 [0,1]

@@ -19,21 +19,6 @@ from torch_efficient_distloss import flatten_eff_distloss
 import pandas as pd
 import time
 
-def excepthook(exc_type, exc_value, exc_traceback):
-    ipdb.post_mortem(exc_traceback)
-
-
-MODE_TO_NAME = {
-    0: 'hevc_1channel',
-    1: 'hevc_10stream',
-}
-
-"""
-Usage:
-    python render.py --config  TeTriRF/configs/N3D/flame_steak_old.py --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19  --render_test --reald
-
-"""
-
 def config_parser():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--config', required=True,
@@ -75,8 +60,9 @@ def config_parser():
     parser.add_argument("--numframe", type=int, default=20, help='number of frames')
     parser.add_argument("--qp",   type=int, default=0)
     parser.add_argument("--reald", action='store_true', help='use compressed data or not, please do uncompression manully before use compressed data')
-    parser.add_argument("--mode", type=int, default=0)
     parser.add_argument("--dcvc", action='store_true', help='use compressed DCVC data or not')
+    parser.add_argument('--strategy', type=str, default='tiling', choices=['tiling', 'separate', 'grouped'],
+                        help='tiling: original; separate: one channel per stream; grouped: RGB triplets + leftover')
     return parser
 
 def seed_everything():
@@ -231,16 +217,22 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     return rgbs, depths, bgmaps, res_psnr
 
 if __name__=='__main__':
-
+    """
+    Usage:
+        python render.py --config  TeTriRF/configs/N3D/flame_steak.py \
+            --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19\
+                 --render_test --startframe 0 --numframe 20 --qp 10 --strategy tiling
+    """
     parser = config_parser()
     args = parser.parse_args()
     cfg = Config.fromfile(args.config)
     cfg.data.frame_ids = args.frame_ids
     args.dump_images = True
-    mode_name = MODE_TO_NAME[args.mode]
     start_frame_id = args.startframe
     numframe = args.numframe
     qp = args.qp
+    strategy = args.strategy
+    S, N = args.startframe, args.startframe+args.numframe-1
     
     print("################################")
     print("--- Frame_ID:", args.frame_ids)
@@ -270,18 +262,20 @@ if __name__=='__main__':
                 ckpt_path = os.path.join(cfg.basedir, cfg.expname, f"fine_last_{frame_id}.tar")
                 testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_test')
             elif args.dcvc:
-                ckpt_path = os.path.join(cfg.basedir, cfg.expname, f"dcvc_compressed_{args.qp}/fine_last_{frame_id}.tar")
-                testsavedir = os.path.join(cfg.basedir, cfg.expname, f'dcvc_render_test_compressed_qp{args.qp}')
+                testsavedir = os.path.join(cfg.basedir, cfg.expname, 
+                                            f"dcvc_triplanes_{S:02d}_{N:02d}_qp{qp}_{strategy}",
+                                            f'render_test')
+                ckpt_path = os.path.join(cfg.basedir, cfg.expname, 
+                                            f"dcvc_triplanes_{S:02d}_{N:02d}_qp{qp}_{strategy}", 
+                                            f"fine_last_{frame_id}.tar")
             else:
-                if mode_name == 'hevc_1channel':
-                    testsavedir = os.path.join(cfg.basedir, cfg.expname, 
-                                             f"planes_{start_frame_id:02d}_{start_frame_id+numframe-1:02d}_qp{qp}",
-                                             f'render_test')
-                    ckpt_path = os.path.join(cfg.basedir, cfg.expname, 
-                                             f"planes_{start_frame_id:02d}_{start_frame_id+numframe-1:02d}_qp{qp}", 
-                                             f"fine_last_{frame_id}.tar")
-                else:
-                    raise NotImplementedError(f"Mode {mode_name} is not implemented yet.")
+                testsavedir = os.path.join(cfg.basedir, cfg.expname, 
+                                            f"triplanes_{S:02d}_{N:02d}_qp{qp}_{strategy}",
+                                            f'render_test')
+                ckpt_path = os.path.join(cfg.basedir, cfg.expname, 
+                                            f"triplanes_{S:02d}_{N:02d}_qp{qp}_{strategy}", 
+                                            f"fine_last_{frame_id}.tar")
+               
 
         # Load model
         ckpt_name = ckpt_path.split('/')[-1][:-4]
