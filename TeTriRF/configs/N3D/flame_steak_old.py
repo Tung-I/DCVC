@@ -1,5 +1,5 @@
 _base_ = '../default.py'
-expname = 'flame_steak_old'
+expname = 'flame_steak'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/out_triplane'
 
 data = dict(

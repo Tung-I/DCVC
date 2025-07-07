@@ -1,9 +1,9 @@
 _base_ = '../default.py'
 expname = 'cook_spinach'
-basedir = './logs/'
+basedir = '/home/tungichen_umass_edu/DCVC/logs/out_triplane'
 
 data = dict(
-	datadir='./data/n3d/cook_spinach/llff/',
+	datadir='/home/tungichen_umass_edu/DCVC/data/n3d/cook_spinach/llff/',
 	dataset_type='llff',
  	ndc=True,
 	xyz_min = [-1.4,  -1.4, -0.6],
@@ -13,12 +13,12 @@ data = dict(
 	factor = 3,
 )
 fine_model_and_render = dict(
-	num_voxels=210**3,
-	num_voxels_base=210**3,
+	num_voxels=192**3,
+	num_voxels_base=192**3,
 	k0_type='PlaneGrid',
-	rgbnet_dim=30,
+	rgbnet_dim=36,
     rgbnet_width=128,
-    mpi_depth=280,
+    mpi_depth=256,
 	stepsize=1,
 	fast_color_thres = 1.0/256.0/80,
     viewbase_pe = 2,

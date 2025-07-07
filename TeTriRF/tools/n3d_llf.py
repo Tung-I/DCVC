@@ -13,7 +13,7 @@ The purpose of this transformation is to make the NV3D/MPEG dataset compatible w
 Author: jhpark
 
 Usage:
-python n3d_llf.py --video_path $WORK/datasets/n3d/flame_steak --llff_path $HOME/DCVC/TeTriRF/data/n3d/flame_steak/llff --num_frames 20
+python n3d_llf.py --video_path $WORK/datasets/n3d/cut_roasted_beef --llff_path $HOME/DCVC/data/n3d/cut_roasted_beef/llff --num_frames 20
 """
 
 parser = argparse.ArgumentParser(description="Convert multiview video dataset to LLFF format")
