@@ -94,7 +94,7 @@ def main():
                 )
 
             # Save as PNG
-            out_path = img_dir / f"cam{cam_idx:02d}.png"
+            out_path = img_dir / f"image_{cam_idx-1:04d}.png"
             cv2.imwrite(str(out_path), frame)
 
     # Release captures

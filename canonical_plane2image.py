@@ -60,7 +60,7 @@ if __name__=='__main__':
                         help='tiling: original; separate: one channel per stream; grouped: RGB triplets + leftover')
     args = parser.parse_args()
 
-    low_bound, high_bound = -20, 20
+    1
     nbits = 2**16-1
 
     if args.logdir[-1] =='/':

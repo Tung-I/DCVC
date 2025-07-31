@@ -1,9 +1,10 @@
 _base_ = '../default.py'
-expname = 'coffee_martini'
+expname = 'flame_steak_dcvc'
+ckptname = 'flame_steak'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/out_triplane'
 
 data = dict(
-	datadir='/home/tungichen_umass_edu/DCVC/data/n3d/coffee_martini/llff/',
+	datadir='/home/tungichen_umass_edu/DCVC/data/n3d/flame_steak/llff/',
 	dataset_type='llff',
  	ndc=True,
 	xyz_min = [-1.4,  -1.4, -0.6],
@@ -12,7 +13,6 @@ data = dict(
     test_frames = [0],
 	factor = 3,
 )
-
 fine_model_and_render = dict(
 	num_voxels=192**3,
 	num_voxels_base=192**3,
@@ -29,15 +29,14 @@ fine_model_and_render = dict(
 _k = 1
 fine_train = dict(
     ray_sampler='flatten',
-	N_iters=32000,
+	N_iters=2000,
 	N_rand=5000,   
 	tv_every=1,                   # count total variation loss every tv_every step
     tv_after=100,                   # count total variation loss from tv_from step
     tv_before=25000,                  # count total variation before the given number of iterations
     tv_dense_before=25000,            # count total variation densely before the given number of iterations
     weight_tv_density=1e-5,        # weight of total variation loss of density voxel grid
-	# weight_tv_k0=1e-4,
-	weight_tv_k0=0,            # weight of total variation loss of color/feature voxel grid
+	weight_tv_k0=1e-4,
 	weight_l1_loss=0.01,
 	weight_distortion = 0.0015,
 	pg_scale=[2000*_k,3500*_k, 5000*_k, 6000*_k],
@@ -47,6 +46,8 @@ fine_train = dict(
     lrate_density=1e-1,           # lr of density voxel grid
     lrate_k0=1e-1,                # lr of color/feature voxel grid
     lrate_rgbnet=1e-3,            # lr of the mlp to preduct view-dependent color
+    comp_every = 1,          # compress every comp_every steps
+    lambda_bpp = 0.1,          # weight of bpp loss
 )
 
 coarse_train = dict(

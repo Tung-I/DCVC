@@ -21,9 +21,9 @@ Usage example
 -------------
 ```
 python triplane_packer.py \
-    --logdir logs/out_triplane/flame_steak_old \
+    --logdir logs/out_triplane/coffee_martini \
     --numframe 20 \
-    --strategy correlation \
+    --strategy tiling \
     --qmode per_channel
 ```
 """
@@ -142,7 +142,7 @@ def parse_args():
     p.add_argument("--numframe", type=int, default=20, help="number of frames to convert")
     p.add_argument("--startframe", type=int, default=0, help="start frame id (inclusive)")
     p.add_argument("--strategy", type=str, default="tiling",
-                   choices=["tiling", "separate", "grouped", "correlation"],
+                   choices=["tiling", "separate", "grouped", "correlation", "flatfour"],
                    help="packing strategy")
     p.add_argument("--qmode", type=str, default="global", choices=["global", "per_channel"],
                    help="quantisation mode")
@@ -153,29 +153,43 @@ def parse_args():
 # Default global min/max used in TeTriRF
 GLOBAL_LOW, GLOBAL_HIGH = -20.0, 20.0
 NBITS = 2 ** 16 - 1  # 16‑bit PNG
+CLIP_PCT = 0.1       # clip 0.5 % low / high tails (per channel)
+PLANE_BOUNDS: Dict[str, List[Tuple[float, float]]] = {}
 
+def _clip_percentiles(ch: torch.Tensor, pct: float) -> Tuple[float, float]:
+    """Return (low, high) percentiles after clipping *pct*%% on each side."""
+    if pct <= 0:
+        return float(ch.min()), float(ch.max())
+    low_q = torch.quantile(ch, pct / 100.0).item()
+    high_q = torch.quantile(ch, 1.0 - pct / 100.0).item()
+    if high_q - low_q < 1e-6:
+        # fallback to full range when nearly constant
+        return float(ch.min()), float(ch.max())
+    return low_q, high_q
 
-def quantise(feat: torch.Tensor, qmode: str, bounds_out: List[Tuple[float, float]]) -> torch.Tensor:
-    """Quantise *feat* (shape [1, C, H, W]) either globally or per‑channel."""
+def quantise(feat: torch.Tensor, qmode: str, bounds_out: List[Tuple[float, float]], plane_name=None) -> torch.Tensor:
+    """Quantise *feat* (shape [1, C, H, W]).
+
+    * global   – fixed [-20, 20]
+    * per_channel – min/max after clipping CLIP_PCT tails to mitigate outliers
+    """
     if qmode == "global":
         low, high = GLOBAL_LOW, GLOBAL_HIGH
         bounds_out.extend([(low, high)] * feat.shape[1])
         norm = (feat - low) / (high - low)
-        q = torch.round(norm * NBITS) / NBITS
-        return q.clamp_(0, 1)
+        return torch.round(norm.clamp(0, 1) * NBITS) / NBITS
 
-    # per‑channel mode
-    q_ch = []
+    # per‑channel
     C = feat.shape[1]
+    q_ch = []
     for c in range(C):
-        ch = feat[0, c]
-        low, high = float(ch.min()), float(ch.max())
-        if abs(high - low) < 1e-6:
-            high = low + 1e-6  # avoid divide‑by‑zero
+        low, high = PLANE_BOUNDS[plane_name][c]         # <<< plane-specific lookup
+        ch        = feat[0, c]
         bounds_out.append((low, high))
-        norm = (ch - low) / (high - low)
+        norm = (ch.clamp(low, high) - low) / (high - low + 1e-8)
         q_ch.append(torch.round(norm * NBITS) / NBITS)
     return torch.stack(q_ch, dim=0).unsqueeze(0).clamp_(0, 1)
+
 
 
 
@@ -183,15 +197,75 @@ def main():
     args = parse_args()
 
     logdir = args.logdir.rstrip("/")
+
+    # ---------------------------------------------------------------------
+    # Pre-scan: collect global min / max for every feature channel
+    #           across the whole segment (all planes, all frames)
+    # ---------------------------------------------------------------------
+    if args.qmode == "per_channel":
+        print("[INFO] Pre-scanning frames to compute per-channel bounds…")
+        ch_min, ch_max = None, None   # will become length-C lists
+
+        for frameid in tqdm(range(args.startframe, args.startframe + args.numframe)):
+            ckpt_path = os.path.join(logdir, f"fine_last_{frameid}.tar")
+            ckpt       = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+
+            # ---------- optional foreground masking (same logic as pack loop) ----------
+            density = ckpt["model_state_dict"]["density.grid"].clone()
+            voxel_size_ratio = ckpt["model_kwargs"]["voxel_size_ratio"]
+            masks = None
+            if "act_shift" in ckpt["model_state_dict"]:
+                alpha = 1 - (torch.exp(density + ckpt["model_state_dict"]["act_shift"]) + 1) ** (-voxel_size_ratio)
+                alpha = F.max_pool3d(alpha, kernel_size=3, padding=1, stride=1)
+                feature_alpha = F.interpolate(alpha, size=tuple(np.array(density.shape[-3:]) * 3),
+                                            mode="trilinear", align_corners=True)
+                mask_fg = feature_alpha >= 1e-4
+                masks = {"xy": mask_fg.sum(axis=4),
+                        "xz": mask_fg.sum(axis=3),
+                        "yz": mask_fg.sum(axis=2)}
+
+            planes_scan = {k.split(".")[-1]: v.clone()
+                        for k, v in ckpt["model_state_dict"].items()
+                        if "k0" in k and "plane" in k and "residual" not in k}
+
+            for plane, feat_scan in planes_scan.items():          # [1,C,H,W]
+                if masks is not None:
+                    m = masks[plane].unsqueeze(1).repeat(1, feat_scan.shape[1], 1, 1)
+                    feat_scan = feat_scan.masked_fill(m == 0, 0)
+
+                C_scan = feat_scan.shape[1]
+                if ch_min is None:                                # first time
+                    ch_min = [float("inf")]  * C_scan
+                    ch_max = [float("-inf")] * C_scan
+
+                # update running min / max
+                for c in range(C_scan):
+                    ch         = feat_scan[0, c]
+                    ch_min[c]  = min(ch_min[c],  ch.min().item())
+                    ch_max[c]  = max(ch_max[c],  ch.max().item())
+
+        # After scanning all frames, store bounds **per plane**
+                PLANE_BOUNDS[plane] = list(zip(ch_min, ch_max))
+
+        # Pretty-print once after loop
+            print("[INFO] Per-channel bounds (segment-wide, per plane):")
+            for p, lst in PLANE_BOUNDS.items():
+                for idx, (lo, hi) in enumerate(lst):
+                    print(f"  {p:>2s}-chan{idx:02d}: [{lo:.4f}, {hi:.4f}]")
+
+
     name = os.path.basename(logdir)
     out_root = os.path.join(logdir, f"planeimg_{args.startframe:02d}_{args.startframe + args.numframe - 1:02d}_{args.strategy}_{args.qmode}")
     os.makedirs(out_root, exist_ok=True)
     print(f"[INFO] Saving plane images to {out_root}")
 
     # Meta‑info to be stored per run
-    meta_plane_bounds: Dict[str, List[Tuple[float, float]]] = {}
+    meta_plane_bounds: Dict[str, List[List[Tuple[float, float]]]] = {}
+    meta_plane_groups: Dict[str, List[List[List[int]]]] = {}  # only for correlation
 
+    frame_cnt = 0
     for frameid in tqdm(range(args.startframe, args.startframe + args.numframe)):
+        frame_cnt += 1
         ckpt_path = os.path.join(logdir, f"fine_last_{frameid}.tar")
         if not os.path.isfile(ckpt_path):
             raise FileNotFoundError(ckpt_path)
@@ -228,7 +302,11 @@ def main():
                 feat = feat.masked_fill(m == 0, 0)
 
             bounds_this_plane: List[Tuple[float, float]] = []
-            feat_q = quantise(feat, args.qmode, bounds_this_plane)
+
+            # ----------------------------------------------------------
+            # quantise: use *segment* bounds when qmode = per_channel
+            # ----------------------------------------------------------
+            feat_q = quantise(feat, args.qmode, bounds_this_plane, plane_name=plane_name)
             meta_plane_bounds[plane_name].append(bounds_this_plane)  # list of frames
 
             C, H, W = feat_q.shape[1:]
@@ -255,12 +333,38 @@ def main():
                     cv2.imwrite(os.path.join(stream_dir, f"im{frameid + 1:05d}.png"), _to16(bgr))
 
             elif args.strategy == "correlation":
-                for gi, idxs in enumerate(correlation_groups(feat)):
+                if plane_name not in meta_plane_groups:
+                    meta_plane_groups[plane_name] = []
+                current_groups = correlation_groups(feat)
+                meta_plane_groups[plane_name].append(current_groups)
+                for gi, idxs in enumerate(current_groups):
                     stream_dir = os.path.join(base_dir, f"stream{gi}")
                     os.makedirs(stream_dir, exist_ok=True)
                     triplet = feat_q[0, idxs]
                     bgr = np.stack([triplet[2], triplet[1], triplet[0]], axis=-1)
                     cv2.imwrite(os.path.join(stream_dir, f"im{frameid + 1:05d}.png"), _to16(bgr))
+
+            elif args.strategy == "flatfour":
+                # ───────────────  “flat-4-to-1”  ───────────────
+                #   • 12-channel feature volume → single RGB image
+                #   • Every 4 channels are tiled into one 2×2 mono image,
+                #     giving three such mono images → mapped to B,G,R.
+                # ------------------------------------------------
+                assert C == 12 and C % 4 == 0, "flatfour expects exactly 12 channels"
+
+                os.makedirs(base_dir, exist_ok=True)
+                H2, W2 = H * 2, W * 2      # canvas for 4-way tiling
+                mono_planes = []
+
+                for fi in range(0, C, 4):                       # (0-3, 4-7, 8-11)
+                    block = feat_q[:, fi : fi + 4]               # [1,4,H,W]
+                    mono  = tile_maker(block, h=H2, w=W2)        # [H2,W2]
+                    mono_planes.append(mono.cpu())
+
+                # OpenCV expects BGR, so reverse RGB order
+                bgr = np.stack([mono_planes[2], mono_planes[1], mono_planes[0]], axis=-1)
+                cv2.imwrite(os.path.join(base_dir, f"im{frameid + 1:05d}.png"),
+                            _to16(bgr))
 
         # ---------------- density plane ----------------
         dens_img = make_density_image(density, 16)
@@ -273,8 +377,10 @@ def main():
     # ---------------------------------------------------------------------
     torch.save({
         "qmode": args.qmode,
-        "bounds": meta_plane_bounds,        # list‑of‑frames × list‑of‑channels per plane
+        "bounds": meta_plane_bounds,        # list-of-frames × list-of-channels per plane
         "nbits": NBITS,
+        "plane_size": {p: feat.shape for p, feat in planes.items()},
+        "groups": meta_plane_groups if args.strategy == "correlation" else None
     }, os.path.join(out_root, "planes_frame_meta.nf"))
 
     print("[DONE] Conversion finished.")

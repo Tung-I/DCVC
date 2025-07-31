@@ -61,7 +61,8 @@ def config_parser():
     parser.add_argument("--qp",   type=int, default=0)
     parser.add_argument("--reald", action='store_true', help='use compressed data or not, please do uncompression manully before use compressed data')
     parser.add_argument("--dcvc", action='store_true', help='use compressed DCVC data or not')
-    parser.add_argument('--strategy', type=str, default='tiling', choices=['tiling', 'separate', 'grouped'],
+    parser.add_argument("--qmode", type=str, default='global', choices=["global", "per_channel"])
+    parser.add_argument('--strategy', type=str, default='tiling', choices=['tiling', 'separate', 'grouped', 'correlation', 'flatfour'],
                         help='tiling: original; separate: one channel per stream; grouped: RGB triplets + leftover')
     return parser
 
@@ -221,7 +222,11 @@ if __name__=='__main__':
     Usage:
         python render.py --config  TeTriRF/configs/N3D/flame_steak.py \
             --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19\
-                 --render_test --startframe 0 --numframe 20 --qp 10 --strategy tiling
+                 --render_test --startframe 0 --numframe 20 
+
+        python render.py --config  TeTriRF/configs/N3D/coffee_martini.py \
+            --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19\
+                 --render_test --startframe 0 --numframe 20  --reald
     """
     parser = config_parser()
     args = parser.parse_args()
@@ -270,10 +275,10 @@ if __name__=='__main__':
                                             f"fine_last_{frame_id}.tar")
             else:
                 testsavedir = os.path.join(cfg.basedir, cfg.expname, 
-                                            f"triplanes_{S:02d}_{N:02d}_qp{qp}_{strategy}",
+                                            f"triplanes_{S:02d}_{N:02d}_qp{qp}_{strategy}_{args.qmode}",
                                             f'render_test')
                 ckpt_path = os.path.join(cfg.basedir, cfg.expname, 
-                                            f"triplanes_{S:02d}_{N:02d}_qp{qp}_{strategy}", 
+                                            f"triplanes_{S:02d}_{N:02d}_qp{qp}_{strategy}_{args.qmode}", 
                                             f"fine_last_{frame_id}.tar")
                
 

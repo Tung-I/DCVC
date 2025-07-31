@@ -1,163 +1,89 @@
-#!/usr/bin/env python3
-"""
-Convert an Immersive Light-Field Video (ILFV) scene into the per-frame LLFF
-layout expected by TeTriRF.
-
-Directory created:
-
-llff/
- ├ 0000/
- │   ├ images/
- │   │   ├ image_0001.jpg
- │   │   ├ image_0002.jpg
- │   │   └ …
- │   └ poses_bounds.npy        # one row per camera (17 floats)
- ├ 0001/
- │   └ …
- └ bbox.json                   # loose scene bounds (xyz_min/max)
-
-Author: ChatGPT (adapted from the original n3d_llf.py)
-"""
-
-import argparse, json, os, re, cv2, numpy as np
+import cv2
+import os
+import argparse
 from tqdm import tqdm
-from pathlib import Path
-from scipy.spatial.transform import Rotation as R
+import numpy as np
+import json
+import re
 
-# -----------------------------------------------------------------------------#
-def parse_args():
-    p = argparse.ArgumentParser()
-    p.add_argument("--scene_path", type=str, required=True,
-                   help="Path to e.g. 11_Alexa_Meade_Face_Paint_2 (unzipped).")
-    p.add_argument("--llff_path",  type=str, required=True,
-                   help="Output directory that will hold the LLFF folders.")
-    p.add_argument("--num_frames", type=int, default=200,
-                   help="How many global frames to extract.")
-    p.add_argument("--undistort", action="store_true",
-                   help="Rectify fisheye to pin-hole using OpenCV fisheye model.")
-    return p.parse_args()
+"""
+This module is designed to reformat the Multiview video dataset into the LLFF data format for NeRF's variants. 
+The purpose of this transformation is to make the NV3D/MPEG dataset compatible with the ReRF model.
 
-# -----------------------------------------------------------------------------#
-_num_re = re.compile(r"(\d+)")
+Author: jhpark
+"""
 
-def cam_index(name: str) -> int:
-    """Turn 'camera_0001' → 1 (for ordering)."""
-    m = _num_re.search(name)
-    return int(m.group(1)) if m else -1
+"""
+Usage:
+    python n3d_llf.py --video_path $WORK/datasets/n3d/flame_steak --llff_path $HOME/DCVC/data/n3d/flame_steak/llff --num_frames 20
+    python n3d_llf.py --video_path $WORK/datasets/ILFV/11_Alexa_Meade_Face_Paint_2 --llff_path $HOME/DCVC/data/ILFV/11_Alexa_Meade_Face_Paint_2/llff --num_frames 20
+"""
 
-# -----------------------------------------------------------------------------#
-def load_camera_models(scene_dir: Path):
-    """Read models.json and construct per-camera info dict."""
-    with open(scene_dir / "models.json", "r") as f:
-        models = json.load(f)
+parser = argparse.ArgumentParser(description="Convert multiview video dataset to LLFF format")
+parser.add_argument("--video_path", type=str, required=True, help="Path to the NV3D dataset directory")
+parser.add_argument("--llff_path", type=str, required=True, help="Path to the output LLFF dataset directory")
+parser.add_argument("--num_frames", type=int, default=200, help="Number of frames to extract from each video")
 
-    cams = {}
-    for m in models:
-        idx = cam_index(m["name"])
-        assert idx >= 0, f"Unexpected camera name: {m['name']}"
+args = parser.parse_args()
 
-        # World→camera rotation (axis-angle)  →  camera→world (transpose)
-        R_cw = cv2.Rodrigues(np.array(m["orientation"]))[0]  # 3×3
-        C_w  = np.array(m["position"])                       # camera centre (world)
+video_path = args.video_path
+llff_path = args.llff_path
+num_frames = args.num_frames
 
-        c2w = np.hstack([R_cw.T, C_w.reshape(3, 1)])         # 3×4
-        # Append [H,W,F] column to get 3×5 as LLFF expects
-        hwf = np.array([[m["height"]], [m["width"]], [m["focal_length"]]])
-        pose_3x5 = np.hstack([c2w, hwf])                     # 3×5
-
-        cams[idx] = {
-            "pose_3x5": pose_3x5,
-            "video":    scene_dir / f"{m['name']}.mp4",
-            "K": np.array([[m["focal_length"], 0, m["principal_point"][0]],
-                           [0, m["focal_length"], m["principal_point"][1]],
-                           [0, 0, 1]], dtype=np.float64),
-            "dist": np.array(m["radial_distortion"], dtype=np.float64),
-            "size": (int(m["width"]), int(m["height"])),
-        }
-    return cams
-
-# -----------------------------------------------------------------------------#
-def init_undistort_map(cam):
-    """Pre-compute fisheye undistortion maps (optional)."""
-    w, h = cam["size"]
-    K    = cam["K"].copy()
-    D    = cam["dist"][[0, 1, 2,]]  # k1,k2,k3 (OpenCV fisheye wants 4 but k3=0 ok)
-    Knew = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(
-        K, D, (w, h), np.eye(3), balance=0.0)
-    map1, map2 = cv2.fisheye.initUndistortRectifyMap(
-        K, D, np.eye(3), Knew, (w, h), cv2.CV_16SC2)
-    return map1, map2
-
-# -----------------------------------------------------------------------------#
-def main():
-    args  = parse_args()
-    scene = Path(args.scene_path).expanduser()
-    out   = Path(args.llff_path).expanduser()
-    out.mkdir(parents=True, exist_ok=True)
-
-    cams = load_camera_models(scene)
-    cam_ids = sorted(cams.keys())                # deterministic order
-
-    # --------- open VideoCapture objects & (optionally) rectification maps ----
-    for cid in cam_ids:
-        cap = cv2.VideoCapture(str(cams[cid]["video"]))
-        if not cap.isOpened():
-            raise RuntimeError(f"Cannot open {cams[cid]['video']}")
-        cams[cid]["cap"] = cap
-        if args.undistort:
-            cams[cid]["maps"] = init_undistort_map(cams[cid])
-
-    # Near / far bounds – start conservatively; can be tightened later
-    near, far = 0.1, 5.0
-
-    # --------- iterate over global frames ------------------------------------
-    for f_idx in tqdm(range(args.num_frames), desc="Frames"):
-        frame_dir   = out / f"{f_idx:04d}"
-        img_dir     = frame_dir / "images"
-        img_dir.mkdir(parents=True, exist_ok=True)
-
-        pose_rows = []
-
-        for view_i, cid in enumerate(cam_ids):
-            cap = cams[cid]["cap"]
-            # Seek once then read
-            cap.set(cv2.CAP_PROP_POS_FRAMES, f_idx)
-            ok, frame = cap.read()
-            if not ok:
-                raise RuntimeError(f"Video {cid} shorter than {args.num_frames} frames.")
-
-            if args.undistort:
-                map1, map2 = cams[cid]["maps"]
-                frame = cv2.remap(frame, map1, map2, interpolation=cv2.INTER_LINEAR,
-                                  borderMode=cv2.BORDER_CONSTANT)
-
-            # BGR→RGB not necessary for training; keep JPG to save space
-            img_name = img_dir / f"image_{view_i:04d}.jpg"
-            cv2.imwrite(str(img_name), frame,
-                        [cv2.IMWRITE_JPEG_QUALITY, 95])
-
-            pose_rows.append(cams[cid]["pose_3x5"].reshape(-1))
-
-        # poses_bounds.npy  (N_cams, 17)
-        pose_arr = np.stack(pose_rows, axis=0)            # (N,15)
-        bounds   = np.tile(np.array([near, far]), (pose_arr.shape[0], 1))
-        np.save(frame_dir / "poses_bounds.npy",
-                np.hstack([pose_arr, bounds]).astype(np.float32))
-
-    # -------------- loose scene bounding box (optional) -----------------------
+def create_bbox(llff_dataset_path):
     bbox = {
         "xyz_min": [-2.0, -2.0, -2.0],
-        "xyz_max": [ 2.0,  2.0,  2.0]
+        "xyz_max": [2.0, 2.0, 2.0]
     }
-    with open(out / "bbox.json", "w") as f:
-        json.dump(bbox, f, indent=2)
 
-    # --------- tidy up --------------------------------------------------------
-    for cid in cam_ids:
-        cams[cid]["cap"].release()
+    with open(os.path.join(llff_dataset_path, 'bbox.json'), 'w') as json_file:
+        json.dump(bbox, json_file, indent=4)
 
-    print("✓ Conversion finished – ready to train with dataset_type='llff'")
 
-# -----------------------------------------------------------------------------#
-if __name__ == "__main__":
-    main()
+def extract_number(filename):
+    """Extracts the number from the filename."""
+    match = re.search(r'(\d+)', filename)
+    if match:
+        return int(match.group(1))
+    return 0  # default if no number is found
+
+def convert_nv3d_to_llff(video_dataset_path, llff_dataset_path, num_frames):
+    # Load poses and bounds
+    poses_bounds = np.load(os.path.join(video_dataset_path, 'poses_bounds.npy'))
+    # print(f"Loaded poses_bounds with shape: {poses_bounds.shape}")
+    # print(f"Sample poses_bounds data:\n{poses_bounds[:2]}")  # Print first two rows for inspection
+    # raise Exception("Debugging")
+
+    # Get the list of video files and sort them based on camera number
+    video_files = sorted(os.listdir(video_dataset_path), key=extract_number)
+
+    # Filter out non-MP4 files
+    video_files = [f for f in video_files if f.endswith('.mp4')]
+
+    # For each video file (camera view)
+    for view_id, video_file in enumerate(video_files):
+
+        # Open the video
+        video = cv2.VideoCapture(os.path.join(video_dataset_path, video_file))
+
+        # Seek to the correct frame
+        #video.set(cv2.CAP_PROP_POS_FRAMES, frame_id)
+        # For each frame to be extracted
+        for frame_id in tqdm(range(num_frames), desc="Processing frames"):
+            # Create directories for the frame
+            frame_dir = os.path.join(llff_dataset_path, str(frame_id))
+            os.makedirs(frame_dir, exist_ok=True)
+            image_dir = os.path.join(frame_dir, 'images')
+            os.makedirs(image_dir, exist_ok=True)
+
+            # Read the frame
+            success, image = video.read()
+            
+            if success:
+                # Save the frame as an image
+                cv2.imwrite(os.path.join(image_dir, f'image_{str(view_id).zfill(4)}.jpg'), image, [cv2.IMWRITE_PNG_COMPRESSION, 2])
+
+        # Save the corresponding poses and bounds
+            np.save(os.path.join(frame_dir, 'poses_bounds.npy'), poses_bounds)
+convert_nv3d_to_llff(video_path, llff_path, num_frames)
+create_bbox(llff_path)

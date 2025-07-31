@@ -9,7 +9,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch_efficient_distloss import flatten_eff_distloss
 
-from TeTriRF.lib import utils, dvgo,  dmpigo, dvgo_video
+from TeTriRF.lib import utils, dvgo, dmpigo, dvgo_video, dcvc_dvgo_video
+from TeTriRF.lib.dcvc_dvgo_video import DCVC_DVGO_Video
 from TeTriRF.lib.load_data import load_data
 
 
@@ -215,11 +216,12 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
     unique_frame_ids = torch.unique(frame_ids, sorted=True).cpu().numpy().tolist()
 
     # initialize video model and load any existing checkpoints
-    model = dvgo_video.DirectVoxGO_Video(frameids=unique_frame_ids,xyz_min=xyz_min,xyz_max=xyz_max,cfg=cfg)
+    # model = dvgo_video.DirectVoxGO_Video(frameids=unique_frame_ids,xyz_min=xyz_min,xyz_max=xyz_max,cfg=cfg)
+    model = dcvc_dvgo_video.DCVC_DVGO_Video(frameids=unique_frame_ids,xyz_min=xyz_min,xyz_max=xyz_max,cfg=cfg)
     ret = model.load_checkpoints()
     if not cfg.fine_model_and_render.dynamic_rgbnet and args.training_mode>0:
         cfg.fine_train.lrate_rgbnet = 0
-    model.set_fixedframe(ret)
+    # model.set_fixedframe(ret)
     model = model.cuda()
     
     #create optimizer for model
@@ -239,7 +241,6 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
 
     # gather multi-frame rays per unfixed frame
     def gather_training_rays(tmasks=None):
-
         rgb_tr_s = []
         rays_o_tr_s = []
         rays_d_tr_s = []
@@ -411,6 +412,14 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         # print("viewdirs.shape:", viewdirs.shape)
         # print("viewdirs:", viewdirs[0])
         
+        ##########################################
+        if global_step % cfg_train.comp_every == 0:
+            model.compress()
+
+            # print(f"bpp_loss: {model.last_bpp.item():.6f} at step {global_step}")
+            # raise Exception("Debugging bpp_loss")
+        ##########################################
+
         render_result = model(
             rays_o, rays_d, viewdirs, frame_ids = frameids,
             global_step=global_step,  mode='feat',
@@ -419,6 +428,10 @@ def scene_rep_reconstruction(args, cfg, cfg_model, cfg_train, xyz_min, xyz_max, 
         # 8) Compute losses and backpropagate
         optimizer.zero_grad(set_to_none=True)
         loss = cfg_train.weight_main * F.mse_loss(render_result['rgb_marched'], target)
+        ##############
+
+        loss += cfg_train.lambda_bpp * model.last_bpp
+        ##############
         psnr = utils.mse2psnr(loss.detach())
 
         ################ Unknown loss terms for now
@@ -577,8 +590,7 @@ def train(args, cfg, data_dict):
 if __name__=='__main__':
     """
     Usage:
-        python run_multiframe.py --config TeTriRF/configs/ILFV/11_Alexa.py --frame_ids 0 --training_mode 1
-        python run_multiframe.py --config TeTriRF/configs/N3D/flame_steak.py --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 --training_mode 1
+        python train_dcvc_triplane.py --config TeTriRF/configs/N3D/flame_steak_dcvc.py --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 --training_mode 1
     """
 
     # load setup

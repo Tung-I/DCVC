@@ -17,101 +17,12 @@ from .dmpigo import DirectMPIGO
 from .sh import eval_sh
 import time
 from torch.serialization import safe_globals
+from .dvgo_video import RGB_Net, RGB_SH_Net
+from .plane_codec_dcvc import DCVCPlaneCodec
 
-class RGB_Net(torch.nn.Module):
-    def __init__(self,dim0=None, rgbnet_width=None, rgbnet_depth=None):
-        super(RGB_Net, self).__init__()
-        self.rgbnet = None
-
-        if dim0 is not None and rgbnet_width is not None and rgbnet_depth is not None:
-            self.set_params(dim0,rgbnet_width,rgbnet_depth)
-
-    def set_params(self, dim0, rgbnet_width, rgbnet_depth):
-        
-        if self.rgbnet is None:
-            self.dim0= dim0
-            self.rgbnet_width = rgbnet_width
-            self.rgbnet_depth = rgbnet_depth
-            self.rgbnet = nn.Sequential(
-                    nn.Linear(dim0, rgbnet_width), nn.ReLU(inplace=True),
-                    *[
-                        nn.Sequential(nn.Linear(rgbnet_width, rgbnet_width), nn.ReLU(inplace=True))
-                        for _ in range(rgbnet_depth-2)
-                    ],
-                    nn.Linear(rgbnet_width, 3),
-                )
-            nn.init.constant_(self.rgbnet[-1].bias, 0)
-            print('***** rgb_net_ reset   *******')
-        else:
-            if self.dim0!=dim0 or self.rgbnet_width!=rgbnet_width or self.rgbnet_depth!=rgbnet_depth:
-                ipdb.set_trace()
-                raise Exception("Inconsistant parameters!")
-
-        return lambda x: self.forward(x)
-
-    def forward(self,x):
-        if self.rgbnet is None:
-            raise Exception("call set_params() first!")
-        return self.rgbnet(x)
-
-    def get_kwargs(self):
-        return {
-            'dim0': self.dim0,
-            'rgbnet_width': self.rgbnet_width,
-            'rgbnet_depth': self.rgbnet_depth
-        }
-
-class RGB_SH_Net(torch.nn.Module):
-    def __init__(self,dim0=None, rgbnet_width=None, rgbnet_depth=None, deg = 3):
-        super(RGB_SH_Net, self).__init__()
-        self.rgbnet = None
-        self.deg = deg
-
-        if dim0 is not None and rgbnet_width is not None and rgbnet_depth is not None:
-            self.set_params(dim0,rgbnet_width,rgbnet_depth,out_dim = 3*(self.deg+1)**2)
-
-    def set_params(self, dim0, rgbnet_width, rgbnet_depth,out_dim):
-        
-        if self.rgbnet is None:
-            self.dim0= dim0
-            self.rgbnet_width = rgbnet_width
-            self.rgbnet_depth = rgbnet_depth
-            self.rgbnet = nn.Sequential(
-                    nn.Linear(dim0, rgbnet_width), nn.ReLU(inplace=True),
-                    *[
-                        nn.Sequential(nn.Linear(rgbnet_width, rgbnet_width), nn.ReLU(inplace=True))
-                        for _ in range(rgbnet_depth-2)
-                    ],
-                    nn.Linear(rgbnet_width, out_dim),
-                )
-            nn.init.constant_(self.rgbnet[-1].bias, 0)
-            print('***** rgb_net_SH reset   *******')
-        else:
-            if self.dim0!=dim0 or self.rgbnet_width!=rgbnet_width or self.rgbnet_depth!=rgbnet_depth:
-                ipdb.set_trace()
-                raise Exception("Inconsistant parameters!")
-
-        return lambda x: self.forward(x)
-
-    def forward(self,x, dirs):
-        if self.rgbnet is None:
-            raise Exception("call set_params() first!")
-        coeffs = self.rgbnet(x)
-        coeffs = coeffs.reshape(x.size(0),3,-1)
-        #coeffs = x.reshape(x.size(0),3,-1)
-        return torch.sigmoid(eval_sh(self.deg, coeffs, dirs))
-
-    def get_kwargs(self):
-        return {
-            'dim0': self.dim0,
-            'rgbnet_width': self.rgbnet_width,
-            'rgbnet_depth': self.rgbnet_depth,
-            'deg': self.deg,
-        }
-
-class DirectVoxGO_Video(torch.nn.Module):
-    def __init__(self, frameids,xyz_min,xyz_max,cfg=None):
-        super(DirectVoxGO_Video, self).__init__()
+class DCVC_DVGO_Video(torch.nn.Module):
+    def __init__(self, frameids, xyz_min, xyz_max, cfg=None, device='cuda'):
+        super(DCVC_DVGO_Video, self).__init__()
 
         self.xyz_min = xyz_min
         self.xyz_max = xyz_max
@@ -123,6 +34,41 @@ class DirectVoxGO_Video(torch.nn.Module):
 
         self.initial_models()
 
+        self.last_bpp   = torch.tensor(0., device=device)
+        self.planes_are_dirty = True   # set True whenever you *update* planes
+
+    @torch.enable_grad()            # stay in graph
+    def run_codec_once(self):
+        """Encode-decode xy/xz/yz planes; store distorted planes & bpp."""
+        planes_by_axis = {'xy': [], 'xz': [], 'yz': []}
+        for fid in self.frameids:
+            k0 = self.dvgos[str(fid)].k0
+            for ax in planes_by_axis:
+                planes_by_axis[ax].append(getattr(k0, f'{ax}_plane')[0])
+
+        total_bpp = 0.
+        for ax, seq_list in planes_by_axis.items():
+            seq = torch.stack(seq_list, dim=0)         # [T,C,H,W]
+            recon, bpp = self.codec(seq)
+            total_bpp += bpp
+            # write back
+            idx = 0
+            for fid in self.frameids:
+                k0 = self.dvgos[str(fid)].k0
+                getattr(k0, f'{ax}_plane').data = recon[idx]; idx += 1
+
+        self.last_bpp = total_bpp / 3        # average over axes
+        self.planes_are_dirty = False        # we’re now in sync
+
+
+    def forward(self, rays_o, rays_d, viewdirs, frame_ids, global_step=None, mode='feat', **render_kwargs):
+        
+        frame_ids_unique = torch.unique(frame_ids, sorted=True).cpu().int().numpy().tolist()   
+        assert len(frame_ids_unique) == 1
+        frameid = frame_ids_unique[0]
+        ret_frame = self.dvgos[str(frameid)](rays_o, rays_d, viewdirs, shared_rgbnet= self.rgbnet, global_step=global_step, mode=mode, **render_kwargs)
+
+        return ret_frame
 
     def get_kwargs(self):
         return {
@@ -189,14 +135,14 @@ class DirectVoxGO_Video(torch.nn.Module):
 
         for frameid in self.frameids:
             frameid = str(frameid)
-            last_ckpt_path = os.path.join(cfg.basedir, cfg.expname, f'fine_last_{frameid}.tar')
+            last_ckpt_path = os.path.join(cfg.basedir, cfg.ckptname, f'fine_last_{frameid}.tar')
             if not os.path.isfile(last_ckpt_path):
                 print(f"Frame {frameid}'s checkpoint doesn't exist")
-                continue
-
+                # Always try to load the pre-trained triplane model
+                raise FileNotFoundError(f"Checkpoint for frame {frameid} not found at {last_ckpt_path}")
 
             # allowlist numpy._core.multiarray._reconstruct
-            ckpt = torch.load(last_ckpt_path)
+            ckpt = torch.load(last_ckpt_path, weights_only=False)
 
             model_kwargs = ckpt['model_kwargs']
             if self.cfg.data.ndc:
@@ -207,32 +153,14 @@ class DirectVoxGO_Video(torch.nn.Module):
             self.dvgos[frameid] = self.dvgos[frameid].cuda()
             print(f"Frame {frameid}'s checkpoint loaded.")
             ret.append(int(frameid))
-            break
+            # break
 
         beg = self.frameids[0]
         eend = self.frameids[-1]
-
-        if self.cfg.fine_model_and_render.dynamic_rgbnet:
-            rgbnet_file = os.path.join(cfg.basedir, cfg.expname, f'rgbnet_{beg}_{eend}.tar')
-        else:
-            rgbnet_file = os.path.join(cfg.basedir, cfg.expname, f'rgbnet.tar')
+        rgbnet_file = os.path.join(cfg.basedir, cfg.ckptname, f'rgbnet_{beg}_{eend}.tar')
         
-        if not os.path.isfile(rgbnet_file):
-            rgbnet_files = [f for f in os.listdir(os.path.join(cfg.basedir, cfg.expname)) if f.endswith('.tar') and 'rgbnet' in f]
-            if len(rgbnet_files)>0:
-                beg = -1
-                eend = -1
-                for f in rgbnet_files:
-                    beg = max(beg, int(f.split('_')[1]))
-                    eend = max(eend, int(f.split('_')[2].split('.')[0]))
-                rgbnet_file = os.path.join(cfg.basedir, cfg.expname, f'rgbnet_{beg}_{eend}.tar')
-            
-        if os.path.isfile(rgbnet_file):
-            # allowlist numpy._core.multiarray._reconstruct
-            checkpoint =torch.load(rgbnet_file)
-
-            self.rgbnet.load_state_dict(checkpoint['model_state_dict']) 
-            print('load RGBNet', rgbnet_file)
+        checkpoint =torch.load(rgbnet_file)
+        self.rgbnet.load_state_dict(checkpoint['model_state_dict']) 
         return ret
 
     def save_checkpoints(self):
@@ -266,6 +194,8 @@ class DirectVoxGO_Video(torch.nn.Module):
         print(f"RGBNet checkpoint saved to {rgbnet_ckpt_path}")
 
     def set_fixedframe(self, ids):
+        """Set the fixed frame ids for the model.
+        """
         self.fixed_frame = ids
         
         if len(ids)>0:
@@ -291,28 +221,6 @@ class DirectVoxGO_Video(torch.nn.Module):
 
                 print(f'Initialize  frame:{frameid}')
 
-
-
-    #-------
-    #rays_o：（N,3） rays_d：（N,3）  viewdirs：（N,3）  frame_ids：（N,1）, pytorch tensor
-    # frame_ids indicate the frame id of each ray
-    def forward(self, rays_o, rays_d, viewdirs, frame_ids, global_step=None, mode='feat', **render_kwargs):
-        
-
-        # find unique frame ids
-        frame_ids_unique = torch.unique(frame_ids, sorted=True).cpu().int().numpy().tolist()   
-        assert len(frame_ids_unique) == 1
-
-        frameid = frame_ids_unique[0]
-
-
-        # seperate rays into different frames according to frame_ids_unique, and feed them into different models in self.dvgos
-        # then concat the results for each key in the returned dict
-
-        ret_frame = self.dvgos[str(frameid)](rays_o, rays_d, viewdirs, shared_rgbnet= self.rgbnet, global_step=global_step, mode=mode, **render_kwargs)
-
-
-        return ret_frame
 
 
 

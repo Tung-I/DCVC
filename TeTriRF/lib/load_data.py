@@ -1,7 +1,8 @@
 import numpy as np
 
-from .load_llff import load_llff_data, LLFF_Dataset
+from .load_llff import LLFF_Dataset
 from .load_NHR import NHR_Dataset
+from .load_immersive import readColmapSceneInfoImmersive
 from torch.utils.data import DataLoader
 import ipdb
 import tqdm
@@ -11,14 +12,11 @@ def load_data(args):
 
     K, depths = None, None
     near_clip = None
-
     frame_ids = None
     masks = None
 
     if args.dataset_type == 'llff':
-
         args.frame_ids.sort()
-
         if not hasattr(args, 'spherify'):
             args.spherify = False
 
@@ -32,7 +30,6 @@ def load_data(args):
             data3 = item[2] 
             data4 = item[3] 
 
-            
             # Return the collated data and labels as a single batch
             return data1, data2, data3, data4
         train_dataloader = DataLoader(dataset, batch_size=1,num_workers = 12, shuffle=False, collate_fn = my_collate_fn)
@@ -44,7 +41,7 @@ def load_data(args):
    
         for i, data in enumerate(train_dataloader):
             images_t, poses_t, render_poses_t, i_test_t = data
-            P = images_t.shape[0]
+            P = images_t.shape[0]  # number of views for one frame index
             res_images.append(images_t)
             res_poses.append(poses_t)
             res_render_poses.append(render_poses_t)
@@ -64,7 +61,7 @@ def load_data(args):
         print('Loaded llff', res_images.shape, res_render_poses.shape, hwf, args.datadir)
         
         test_frames = []
-        for i in args.test_frames:
+        for i in args.test_frames:  # args.test_frames is [0]
             for j in range(i,int(res_images.shape[0]),P):
                 test_frames.append(j)
         #i_val = i_test
@@ -76,14 +73,89 @@ def load_data(args):
         if args.ndc:
             near = 0.
             far = 1.
-        else:
-            near = np.ndarray.min(bds) * .9
-            far = np.ndarray.max(bds) * 1.
+        # else:
+        #     near = np.ndarray.min(bds) * .9
+        #     far = np.ndarray.max(bds) * 1.
         print('NEAR FAR', near, far)
 
         
+    elif args.dataset_type == 'immersive':
 
+        scene = readColmapSceneInfoImmersive(
+            path      = args.datadir,
+            images    = None,
+            eval      = False,
+            duration  = len(args.frame_ids),
+            testonly  = False
+        )
 
+        train_cams = scene.train_cameras
+        test_cams  = scene.test_cameras
+        cam_infos = test_cams + train_cams
+        """
+        train_cam_infos =  cam_infos[duration:]
+        test_cam_infos = cam_infos[:duration]
+        """
+
+        images = np.stack([np.array(cam.image) for cam in cam_infos], axis=0)  
+        poses  = np.stack([
+            np.concatenate([cam.R, cam.T.reshape(3,1)], axis=1)
+            for cam in cam_infos
+        ], axis=0)  # (N_train, 3, 4)
+
+        # 5) compute H, W, focal for all cameras (we assume they’re identical)
+        H, W = cam_infos[0].height, cam_infos[0].width
+        # recover focal from horizontal FOV: focal = W/(2*tan(FovX/2))
+        focal = W / (2.0 * np.tan(cam_infos[0].FovX / 2.0))  # fov2focal
+        hwf   = [H, W, focal]
+    
+        # 6) build K or Ks
+        K = np.array([
+            [focal,    0.0,   0.5 * W],
+            [0.0,    focal,   0.5 * H],
+            [0.0,      0.0,     1.0 ]
+        ], dtype=np.float32)
+        Ks = np.repeat(K[None], len(poses), axis=0)  # (N_train, 3, 3)
+
+        # 7) near/far from any camera
+        if args.ndc:
+            near = 0.0
+            far  = 1.0
+        else:
+            near = cam_infos[0].near
+            far  = cam_infos[0].far
+
+        # if near != 0.0 or far != 1.0:
+        #     raise Exception(f"Warning: near {near} and far {far} from camera info do not match NDC convention (0.0, 1.0).")
+            
+        # 8) build frame_ids
+        frame_ids = []
+        for i in range(0, len(cam_infos), len(args.frame_ids)):
+            frame_ids.append(torch.tensor(args.frame_ids))
+        frame_ids = torch.cat(frame_ids).long()
+        assert len(frame_ids) == images.shape[0], f"Frame ids length {len(frame_ids)} does not match number of cameras {len(cam_infos)}."
+
+        render_poses=None # To-do: generate spherical poses for visualization; for now it does not matter
+
+        i_test = np.arange(len(test_cams))
+        i_train = np.array([i for i in np.arange(int(images.shape[0])) if i not in i_test])
+        i_val = i_test
+
+        # 11) misc
+        HW = np.array([im.shape[:2] for im in images])
+        irregular_shape = False  # all same size
+        depths = None           # no depths in immersive pipeline
+        masks  = None
+
+        return dict(
+            hwf=hwf, HW=HW, Ks=Ks,
+            near=near, far=far, near_clip=near_clip,
+            i_train=i_train, i_val=i_val, i_test=i_test,
+            poses=poses, render_poses=render_poses,
+            images=images, depths=depths,
+            irregular_shape=irregular_shape,
+            frame_ids=frame_ids, masks=masks,
+        )
 
 
 

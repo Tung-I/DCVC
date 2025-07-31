@@ -11,9 +11,12 @@ This module is designed to reformat the Multiview video dataset into the LLFF da
 The purpose of this transformation is to make the NV3D/MPEG dataset compatible with the ReRF model.
 
 Author: jhpark
+"""
 
+"""
 Usage:
-python n3d_llf.py --video_path $WORK/datasets/n3d/cut_roasted_beef --llff_path $HOME/DCVC/data/n3d/cut_roasted_beef/llff --num_frames 20
+    python n3d_llf.py --video_path $WORK/datasets/n3d/flame_steak --llff_path $HOME/DCVC/data/n3d/flame_steak/llff --num_frames 20
+    python n3d_llf.py --video_path $WORK/datasets/ILFV/11_Alexa_Meade_Face_Paint_2 --llff_path $HOME/DCVC/data/ILFV/11_Alexa_Meade_Face_Paint_2/llff --num_frames 20
 """
 
 parser = argparse.ArgumentParser(description="Convert multiview video dataset to LLFF format")
@@ -47,6 +50,9 @@ def extract_number(filename):
 def convert_nv3d_to_llff(video_dataset_path, llff_dataset_path, num_frames):
     # Load poses and bounds
     poses_bounds = np.load(os.path.join(video_dataset_path, 'poses_bounds.npy'))
+    # print(f"Loaded poses_bounds with shape: {poses_bounds.shape}")
+    # print(f"Sample poses_bounds data:\n{poses_bounds[:2]}")  # Print first two rows for inspection
+    # raise Exception("Debugging")
 
     # Get the list of video files and sort them based on camera number
     video_files = sorted(os.listdir(video_dataset_path), key=extract_number)

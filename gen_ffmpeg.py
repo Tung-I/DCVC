@@ -1,72 +1,78 @@
-import os, sys, copy, glob, json, time, random, argparse
-from shutil import copyfile
-from tqdm import tqdm, trange
-import numpy as np
-
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import cv2
-
+import os, sys, argparse
+import glob
 
 if __name__=='__main__':
     """
     Usage:
-        ython triplane2img.py --logdir logs/out_triplane/flame_steak_old --numframe 20
+        python new_gen_ffmpeg.py --logdir logs/out_triplane/flame_steak_old --numframe 20 --strategy grouped --qp 20
     """
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--logdir', required=True, help='Path to Tri-plane checkpoints (.tar files)')
+    parser.add_argument('--logdir', required=True, help='Path to planeimg output directories')
     parser.add_argument('--qp', type=int, default=20, help='Quantization parameter for video compression')
-    parser.add_argument("--numframe", type=int, default=20, help='number of frames')
-    parser.add_argument("--codec", type=str, default='h265', help='h265 or mpg2')
-    parser.add_argument("--startframe", type=int, default=0, help='start frame id')
-
+    parser.add_argument('--codec', type=str, default='h265', help='h265 or mpg2')
+    parser.add_argument('--startframe', type=int, default=0, help='start frame id')
+    parser.add_argument('--numframe', type=int, default=20, help='number of frames')
+    parser.add_argument('--strategy', type=str, default='tiling', choices=['tiling','separate','grouped'],
+                        help='triplane-to-image strategy')
+    parser.add_argument('--planes', nargs='+', default=['xy_plane','xz_plane','yz_plane','density'],
+                        help='List of plane subfolders')
     args = parser.parse_args()
+    pwd = os.getcwd()
+    base = os.path.join(pwd, args.logdir, f'planeimg_{args.startframe:02d}_{args.startframe+args.numframe-1:02d}_{args.strategy}')
+    fname = f'{base}/ffmpeg_qp{args.qp}_{args.strategy}.sh'
 
-    logdir = args.logdir
-    qp = args.qp
-    start_frame_id = args.startframe
-    numframe = args.numframe
+    with open(fname, 'w') as f:
+        for p in args.planes:
+            # determine directories depending on strategy
+            plane_root = os.path.join(base, p)
+            if args.strategy == 'tiling' or p == 'density':
+                dirs = [plane_root]
+            elif args.strategy == 'separate':
+                dirs = [os.path.join(plane_root, 'c0'),
+                        os.path.join(plane_root, 'c1'),
+                        os.path.join(plane_root, 'c2'),
+                        os.path.join(plane_root, 'c3'),
+                        os.path.join(plane_root, 'c4'),
+                        os.path.join(plane_root, 'c5'),
+                        os.path.join(plane_root, 'c6'),
+                        os.path.join(plane_root, 'c7'),
+                        os.path.join(plane_root, 'c8'),
+                        os.path.join(plane_root, 'c9')]
+            else:  # grouped
+                dirs = [os.path.join(plane_root, 'stream0'),
+                        os.path.join(plane_root, 'stream1'),
+                        os.path.join(plane_root, 'stream2'),
+                        os.path.join(plane_root, 'stream3')]
 
-    save_dir = os.path.join(args.logdir, f'planeimg_{start_frame_id:02d}_{numframe-1:02d}')
-    xy_save_dir = os.path.join(save_dir, f'xy_qp{qp}')
-    xz_save_dir = os.path.join(save_dir, f'xz_qp{qp}')
-    yz_save_dir = os.path.join(save_dir, f'yz_qp{qp}')
-    density_save_dir = os.path.join(save_dir, f'density_qp{qp}')
-    os.makedirs(xy_save_dir, exist_ok=True)
-    os.makedirs(xz_save_dir, exist_ok=True)
-    os.makedirs(yz_save_dir, exist_ok=True)
-    os.makedirs(density_save_dir, exist_ok=True)
+            for dirpath in dirs:
+                # switch into the directory containing PNGs
+                f.write(f'cd {dirpath}\n')
 
-    if not os.path.exists(save_dir):
-        raise Exception(f"Save directory {save_dir} does not exist. Please run triplane2img.py first.")
-    filename = f'{save_dir}/ffmpeg_qp{qp}.sh'
+                # choose pixel formats
+                if p == 'density' or args.strategy == 'tiling' or args.strategy == 'separate':
+                    pix_in = '-pix_fmt gray12le'
+                    pix_out = '-pix_fmt gray16be'
+                elif args.strategy == 'grouped':
+                    if os.path.basename(dirpath) == 'stream3':
+                        pix_in = '-pix_fmt gray12le'
+                        pix_out = '-pix_fmt gray16be'
+                    else:
+                        pix_in = '-pix_fmt yuv444p10le'
+                        pix_out = '-pix_fmt rgb48be'
+                else:
+                    raise ValueError(f"Unknown strategy: {args.strategy}")
+                # encode into video.mp4
+                f.write(f"ffmpeg -y -framerate 30 -i im%05d.png -c:v libx265 {pix_in} -crf {args.qp} video.mp4\n")
+               
+                # create output folder and move encoded video
+                folder_name = f"{os.path.basename(dirpath)}_qp{args.qp}"
+                f.write(f"mkdir -p ../{folder_name}\n")
+                f.write(f"mv video.mp4 ../{folder_name}/\n")
 
-    with open(filename,'w') as f:
-        # go to the original density directory
-        f.write(f'cd density\n')
+                # decode inside the new folder
+                f.write(f"cd ../{folder_name}\n")
+                f.write(f"ffmpeg -y -i video.mp4 {pix_out} im%05d_decoded.png\n")
+                f.write("\n")
 
-        # encode density images
-        if args.codec =='h265':
-            #Q: say the images are named im00001.png, im00002.png, ..., im00020.png, how to sepcify the input images?
-            # A: 
-            f.write(f"ffmpeg -y -framerate 30 -i im%05d.png -c:v libx265 -pix_fmt gray12le -color_range pc -crf {args.qp} density_planes.mp4\n")
-            # move the encoded video to the new save directory
-            f.write(f"mv density_planes.mp4 ../density_qp{qp}/\n")
-            # go to the new save directory
-            f.write(f'cd ../density_qp{qp}\n')
-            # decompress the video to images
-            f.write(f"ffmpeg -y -i density_planes.mp4  -pix_fmt gray16be  im%05d_decoded.png\n")
-
-            for p in ['xy','xz','yz']:
-                f.write(f'cd ../{p}\n')
-                # encode the plane images
-                f.write(f"ffmpeg -y -framerate 30 -i im%05d.png -c:v libx265 -pix_fmt gray12le -color_range pc   -crf {args.qp}  {p}_planes.mp4\n")
-                # move the encoded video to the new save directory: {p}_save_dir
-                f.write(f"mv {p}_planes.mp4 ../{p}_qp{qp}/\n")
-                # go to the new save directory of that plane: {p}
-                f.write(f'cd ../{p}_qp{qp}\n')
-                # decompress the video to images
-                f.write(f"ffmpeg -y -i {p}_planes.mp4  -pix_fmt gray16be im%05d_decoded.png\n")
-
-    os.system(f"chmod +x {filename}")
+    os.system(f"chmod +x {fname}")
+    print(f"Generated FFmpeg script: {fname}")

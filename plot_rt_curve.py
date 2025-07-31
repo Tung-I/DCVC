@@ -107,17 +107,29 @@ if __name__ == '__main__':
     parser.add_argument('--logdir',     required=True, help='root folder containing planeimg_* and planes_* dirs')
     parser.add_argument('--startframe', type=int, default=0)
     parser.add_argument('--numframe',   type=int, default=20)
-    parser.add_argument('--qps',        nargs='+', type=int, default=[10,20,24,28,30])
+    parser.add_argument('--qps',        nargs='+', type=int, default=[10,18,23,28,33])
     parser.add_argument('--dcvc_qps',  nargs='+', type=int, default=[0,21,42,63])
     args = parser.parse_args()
 
+    # strategies = {
+    #     'tiling'  : 'Flattened (1 stream)',
+    #     'separate': 'Separate (10 streams)',
+    #     'grouped' : 'Grouped (3 rgb + 1 density stream)',
+    #     'dcvc_tiling'  : 'DCVC + Flattened',
+    #     'dcvc_separate': 'DCVC + Separate',
+    #     'dcvc_grouped' : 'DCVC + Grouped'
+    # }
     strategies = {
-        'tiling'  : 'Flattened (1 stream)',
-        'separate': 'Separate (10 streams)',
-        'grouped' : 'Grouped (3 rgb + 1 density stream)',
-        'dcvc_tiling'  : 'DCVC + Flattened',
-        'dcvc_separate': 'DCVC + Separate',
-        'dcvc_grouped' : 'DCVC + Grouped'
+        'tiling_global'  : 'Flattened (1-channel, 1 stream)',
+        'separate_global': 'Separate (1-channel, 12 streams)',
+        'grouped_global' : 'Grouped (3-channel, 4 streams)',
+        'correlation_global': 'C-Grouped (3-channel, 4 streams)',
+        'flatfour_global': 'FlatFour (3-channel, 1 stream)',
+        'tiling_per_channel'  : 'Flattened (per-ch quant.)',
+        'separate_per_channel': 'Separate (per-ch quant.)',
+        'grouped_per_channel' : 'Grouped (per-ch quant.)',
+        'correlation_per_channel': 'C-Grouped (per-ch quant.)',
+        'flatfour_per_channel': 'FlatFour (per-ch quant.)'    
     }
 
     # collect all RD data
@@ -161,7 +173,7 @@ if __name__ == '__main__':
         style="Strategy",
         markers=True,
         dashes=False,
-        linewidth=2
+        linewidth=1.0
     )
     plt.gca().invert_xaxis()   # smaller size = better compression → on the right
     plt.xlabel("Bitrate (KB/frame)")

@@ -2,6 +2,7 @@
 # Licensed under the MIT License.
 
 import torch
+import math
 from torch import nn
 
 from ..layers.cuda_inference import combine_for_reading_2x, \

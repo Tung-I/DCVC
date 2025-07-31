@@ -392,8 +392,6 @@ class LLFF_Dataset(torch.utils.data.Dataset):
                                                                         width = self.width, height = self.height, spherify= self.spherify,
                                                                         frame_id=self.frameids[idx], 
                                                                         movie_render_kwargs=movie_render_kwargs)
-        
-        
         return images, poses, render_poses, i_test
 
 
