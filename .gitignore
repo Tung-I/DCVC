@@ -15,4 +15,5 @@ data/*
 
 TeTriRF/logs/*
 TeTriRF/results/*
-data/*
+data/
+wandb/*

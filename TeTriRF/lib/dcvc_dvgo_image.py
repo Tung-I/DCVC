@@ -18,12 +18,11 @@ from .sh import eval_sh
 import time
 from torch.serialization import safe_globals
 from .dvgo_video import RGB_Net, RGB_SH_Net
-from .plane_codec_dcvc import DCVCPlaneCodec, DCVCImageCodec
+from .plane_codec_dcvc import DCVCImageCodec
 
-
-class DCVC_DVGO_Video(torch.nn.Module):
+class DCVC_DVGO_Image(torch.nn.Module):
     def __init__(self, frameids, xyz_min, xyz_max, cfg=None, device='cuda', dcvc_qp=0):
-        super(DCVC_DVGO_Video, self).__init__()
+        super(DCVC_DVGO_Image, self).__init__()
 
         self.xyz_min = xyz_min
         self.xyz_max = xyz_max
@@ -35,13 +34,7 @@ class DCVC_DVGO_Video(torch.nn.Module):
 
         self.initial_models()
 
-        self.last_bpp   = torch.tensor(0., device=device)
-        self.planes_are_dirty = True   # set True whenever you *update* planes
-
-        if len(self.frameids) == 1:
-            self.codec = DCVCImageCodec(qp=dcvc_qp, device=device)
-        else:
-            self.codec = DCVCPlaneCodec(qp=dcvc_qp, device=device)
+        self.codec = DCVCImageCodec(qp=dcvc_qp, device=device)
 
     @torch.enable_grad()            # stay in graph
     def run_codec_once(self):
@@ -66,7 +59,7 @@ class DCVC_DVGO_Video(torch.nn.Module):
                 getattr(k0, f'{ax}_plane').data = plane_t
                 idx += 1
 
-        self.last_bpp = total_bpp / 3        # average over axes
+        self.last_bpp = total_bpp       # average over axes
         self.planes_are_dirty = False        # we’re now in sync
 
 
@@ -301,9 +294,3 @@ class DCVC_DVGO_Video(torch.nn.Module):
             frameid = str(frameid)
             res.append(self.dvgos[frameid].update_occupancy_cache())
         return np.mean(res)
-
-    
-
-       
-
-        

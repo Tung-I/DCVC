@@ -20,6 +20,7 @@ import numpy as np
 import imageio
 from mmengine.config import Config
 import wandb
+import math
 
 from TeTriRF.lib import dvgo, dmpigo, dvgo_video, dcvc_dvgo_video, utils      # unchanged
 from TeTriRF.lib.load_data import load_data
@@ -28,7 +29,7 @@ from torch_efficient_distloss import flatten_eff_distloss
 
 """
 Usage:
-    python train_dcvc_triplane.py --config TeTriRF/configs/N3D/flame_steak_dcvc.py --frame_ids 0 1 2 3 4 5 6 7 8 9 --training_mode 1
+    python train_image_dcvc_triplane.py --config TeTriRF/configs/N3D/flame_steak_image_dcvc.py --frame_ids 0 --training_mode 1
 """
 
 # ------------------------------------------------------------------------------
@@ -109,6 +110,9 @@ class Trainer:
         wandb.watch(self.model, log="all", log_freq=self.args.i_print)
 
         self._build_rays()
+
+        self.qp = self.cfg.fine_train.qp
+        self.lambda_bpp = self.qp_to_lambda(self.qp)
 
     def _build_model_and_opt(self):
         xyz_min = torch.tensor(self.cfg.data.xyz_min)
@@ -203,6 +207,13 @@ class Trainer:
                 self.model.dvgos[fid].act_shift -= cfg_t.decay_after_scale / (2 if step in cfg_t.pg_scale2 else 1)
             torch.cuda.empty_cache()
 
+    def qp_to_lambda(self, qp):
+        cfg_t = self.cfg.fine_train
+        lambda_val = math.log(cfg_t.lambda_min) + qp / (len(cfg_t.qp_pool) - 1) * (
+                math.log(cfg_t.lambda_max) - math.log(cfg_t.lambda_min))
+        lambda_val = math.pow(math.e, lambda_val)
+        return lambda_val
+
     # -------------------------------------------------------------------------
     # Main step
     # -------------------------------------------------------------------------
@@ -221,8 +232,8 @@ class Trainer:
             to_dev = lambda x: x.to(self.device)
             target, ro, rd, vd = map(to_dev, (target, ro, rd, vd))
         
-        if step > 1:
-            self.model.run_codec_once()
+
+        self.model.run_codec_once()
 
         render = self.model(ro, rd, vd, frame_ids=fid_b, global_step=step,
                             mode='feat',
@@ -255,7 +266,7 @@ class Trainer:
 
         loss += self.cfg.fine_train.weight_l1_loss * self.model.compute_k0_l1_loss(fid_batch)
        
-        # loss += cfg_t.lambda_bpp * self.model.last_bpp
+        loss += self.lambda_bpp * self.model.last_bpp
         return loss
 
     # -------------------------------------------------------------------------
@@ -300,7 +311,7 @@ if __name__ == '__main__':
 
     # initialize wandb
     wandb.init(
-      project="dcvc_triplane",
+      project="flame_steak_image_dcvc",
       name=cfg.expname,
       config=vars(args)
     )

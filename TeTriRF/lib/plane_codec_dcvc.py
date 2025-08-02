@@ -7,7 +7,7 @@ from src.utils.common import get_state_dict
 import numpy as np
 import torch.nn.functional as F
 import math
-
+from src.models.dcvc_codec_forward import dcvc_image_codec_forward
 DCVC_ALIGN = 32
 
 def pack_planes_to_rgb(x, align=DCVC_ALIGN):
@@ -59,13 +59,37 @@ def unpack_rgb_to_planes(y_pad, C, orig_size):
     else:
         raise ValueError(f"unpack: C must be 4 or 12 (got {C})")
 
+def _normalize_planes(seq, mode="per_channel", global_range=(-20.0, 20.0), eps=1e-6):
+    """
+    Normalize tri-plane tensor to [0,1].
+    seq : [T,C,H,W] (float32/float16)
+    Returns:
+      seq_n    : normalized to [0,1]
+      c_min    : broadcastable min used
+      scale    : broadcastable (max-min)
+    """
+    if mode == "per_channel":
+        # per-channel min/max over T,H,W
+        c_min = seq.amin(dim=(0, 2, 3), keepdim=True)             # [1,C,1,1]
+        c_max = seq.amax(dim=(0, 2, 3), keepdim=True)
+    elif mode == "global":
+        lo, hi = global_range
+        c_min = torch.as_tensor(lo, dtype=seq.dtype, device=seq.device).view(1, 1, 1, 1)
+        c_max = torch.as_tensor(hi, dtype=seq.dtype, device=seq.device).view(1, 1, 1, 1)
+    else:
+        raise ValueError(f"Unknown quant_mode: {mode}")
+
+    scale = (c_max - c_min).clamp_(eps)
+    seq_n = ((seq - c_min) / scale).clamp_(0, 1)
+    return seq_n, c_min, scale
+
 class DCVCPlaneCodec(torch.nn.Module):
     """
     Differentiable encoder/decoder for a sequence of tri-plane feature maps.
     Expects input  [T, C, H, W]   (float32 in arbitrary range)
     Returns recon  [T, C, H, W]   and  bpp  (scalar)
     """
-    def __init__(self, device='cuda', force_zero_thres=0.12):
+    def __init__(self, device='cuda', force_zero_thres=0.12, qp=0):
         super().__init__()
 
         self.i_frame_net = DMCI()
@@ -89,11 +113,11 @@ class DCVCPlaneCodec(torch.nn.Module):
         for p in self.p_frame_net.parameters():
             p.requires_grad_(False)
 
-        qp_i = []
-        for i in np.linspace(0, DMC.get_qp_num() - 1, num=4):
-            qp_i.append(int(i+0.5))
+        # qp_i = []
+        # for i in np.linspace(0, DMC.get_qp_num() - 1, num=4):
+        #     qp_i.append(int(i+0.5)) # [0, 21, 42, 63]
 
-        self.qp        = qp_i[0]
+        self.qp = qp 
         print(f"Using quantization parameter {self.qp} for DCVC codec")
         self.pack_fn   = pack_planes_to_rgb
         self.unpack_fn = unpack_rgb_to_planes
@@ -101,6 +125,77 @@ class DCVCPlaneCodec(torch.nn.Module):
 
 
     def forward(self, seq):
+        with torch.no_grad(): 
+            device   = next(self.i_frame_net.parameters()).device
+            dtype_in = seq.dtype
+            T, C, H, W = seq.shape
+
+            # 1. normalise
+            c_min  = seq.amin(dim=(0, 2, 3), keepdim=True)
+            c_max  = seq.amax(dim=(0, 2, 3), keepdim=True)
+            scale  = (c_max - c_min).clamp_(1e-6)
+            seq_n  = ((seq - c_min) / scale).clamp_(0, 1)
+
+            # 2. pack & pad
+            y_pad, orig_size = pack_planes_to_rgb(seq_n)      # H2_pad, W2_pad
+            H2_pad, W2_pad = y_pad.shape[-2:]
+            y_pad = y_pad.to(device=device, dtype=torch.float16)
+
+            # 3. DCVC frame loop
+            self.p_frame_net.clear_dpb()
+            self.p_frame_net.set_curr_poc(0)
+
+            recon_rgb, bpp_list = [], []
+            for t in range(T):
+                frame_in = y_pad[t:t+1]                       # [1,3,H2p,W2p]
+
+                if t == 0:
+                    out = self.i_frame_net(frame_in, self.qp)
+                else:
+                    out = self.p_frame_net(frame_in, self.qp)
+
+                # --- crop decoded frame to encoder's pad window -------------
+                x_hat_crop = out["x_hat"][..., :H2_pad, :W2_pad]
+
+                if t == 0:                                    # DPB reference
+                    self.p_frame_net.add_ref_frame(None, x_hat_crop)
+
+                recon_rgb.append(x_hat_crop.to(torch.float32))
+                bpp_list.append(out["bpp"])
+
+            recon_rgb = torch.cat(recon_rgb, dim=0)           # [T,3,H2p,W2p]
+            avg_bpp   = torch.stack(bpp_list).mean()
+
+            # 4. unpack  →  feature planes
+            recon_n = unpack_rgb_to_planes(recon_rgb, C, orig_size)  # [T,C,H,W]
+
+            # 5. denormalise
+            recon_seq = (recon_n * scale + c_min).to(dtype=dtype_in)
+        return recon_seq, avg_bpp
+    
+
+class DCVCImageCodec(torch.nn.Module):
+    def __init__(self, device='cuda', force_zero_thres=0.12, qp=0):
+        super().__init__()
+
+        self.i_frame_net = DMCI()
+        i_state_dict = get_state_dict("checkpoints/cvpr2025_image.pth.tar")
+        self.i_frame_net.load_state_dict(i_state_dict)
+        self.i_frame_net.to(device)
+        self.i_frame_net.eval()
+        self.i_frame_net.update(force_zero_thres)
+        # self.i_frame_net.half()
+
+        for p in self.i_frame_net.parameters():   
+            p.requires_grad_(False)
+
+        self.pack_fn   = pack_planes_to_rgb
+        self.unpack_fn = unpack_rgb_to_planes
+        self.qp = qp
+        self.device = device
+
+    def forward(self, seq):
+
         device   = next(self.i_frame_net.parameters()).device
         dtype_in = seq.dtype
         T, C, H, W = seq.shape
@@ -116,34 +211,18 @@ class DCVCPlaneCodec(torch.nn.Module):
         H2_pad, W2_pad = y_pad.shape[-2:]
         y_pad = y_pad.to(device=device, dtype=torch.float16)
 
-        # 3. DCVC frame loop
-        self.p_frame_net.clear_dpb()
-        self.p_frame_net.set_curr_poc(0)
 
-        recon_rgb, bpp_list = [], []
-        for t in range(T):
-            frame_in = y_pad[t:t+1]                       # [1,3,H2p,W2p]
+        result = dcvc_image_codec_forward(
+            y_pad, self.qp, self.i_frame_net, device=self.device
+        )
+        recon_rgb = result['x_hat']
+        bpp = result['bpp']
 
-            if t == 0:
-                out = self.i_frame_net(frame_in, self.qp)
-            else:
-                out = self.p_frame_net(frame_in, self.qp)
-
-            # --- crop decoded frame to encoder's pad window -------------
-            x_hat_crop = out["x_hat"][..., :H2_pad, :W2_pad]
-
-            if t == 0:                                    # DPB reference
-                self.p_frame_net.add_ref_frame(None, x_hat_crop)
-
-            recon_rgb.append(x_hat_crop.to(torch.float32))
-            bpp_list.append(out["bpp"])
-
-        recon_rgb = torch.cat(recon_rgb, dim=0)           # [T,3,H2p,W2p]
-        avg_bpp   = torch.stack(bpp_list).mean()
-
-        # 4. unpack  →  feature planes
         recon_n = unpack_rgb_to_planes(recon_rgb, C, orig_size)  # [T,C,H,W]
 
         # 5. denormalise
-        recon_seq = (recon_n * scale + c_min).to(dtype=dtype_in)
-        return recon_seq, avg_bpp
+        recon = (recon_n * scale + c_min).to(dtype=dtype_in)
+
+        return recon, bpp
+
+    # def infer(self)

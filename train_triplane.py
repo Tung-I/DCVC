@@ -19,16 +19,15 @@ from tqdm import tqdm, trange
 import numpy as np
 import imageio
 from mmengine.config import Config
-import wandb
 
-from TeTriRF.lib import dvgo, dmpigo, dvgo_video, dcvc_dvgo_video, utils      # unchanged
+from TeTriRF.lib import dvgo, dmpigo, dvgo_video, utils      # unchanged
 from TeTriRF.lib.load_data import load_data
 from torch_efficient_distloss import flatten_eff_distloss
 
-
 """
 Usage:
-    python train_dcvc_triplane.py --config TeTriRF/configs/N3D/flame_steak_dcvc.py --frame_ids 0 1 2 3 4 5 6 7 8 9 --training_mode 1
+    python train_triplane.py --config TeTriRF/configs/N3D/flame_steak.py --frame_ids 0 1 2 3 4 5 6 7 8 9 --training_mode 1
+    python train_triplane.py --config TeTriRF/configs/N3D/flame_steak_image.py --frame_ids 0  --training_mode 1
 """
 
 # ------------------------------------------------------------------------------
@@ -41,7 +40,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=777)
     p.add_argument("--training_mode", type=int, default=0)
     # misc I/O
-    p.add_argument("--i_print", type=int, default=100)
+    p.add_argument("--i_print", type=int, default=500)
     p.add_argument("--render_only", action='store_true')
     p.add_argument("--no_reload", action='store_true')
     p.add_argument("--no_reload_optimizer", action='store_true')
@@ -105,9 +104,6 @@ class Trainer:
     def __post_init__(self):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self._build_model_and_opt()
-        
-        wandb.watch(self.model, log="all", log_freq=self.args.i_print)
-
         self._build_rays()
 
     def _build_model_and_opt(self):
@@ -115,12 +111,10 @@ class Trainer:
         xyz_max = torch.tensor(self.cfg.data.xyz_max)
         ids      = torch.unique(self.data['frame_ids']).cpu().tolist()
 
-        # self.model = dvgo_video.DirectVoxGO_Video(ids, xyz_min, xyz_max, self.cfg).to(self.device)
-        self.model = dcvc_dvgo_video.DCVC_DVGO_Video(ids, xyz_min, xyz_max, self.cfg, dcvc_qp = self.cfg.fine_train.qp).to(self.device)
-        ret = self.model.load_checkpoints()
-        # if args.resume:
-        #     ret = self.model.load_checkpoints()
-        #     self.model.set_fixedframe(ret)         # identical to original side-effect
+        self.model = dvgo_video.DirectVoxGO_Video(ids, xyz_min, xyz_max, self.cfg).to(self.device)
+        if args.resume:
+            ret = self.model.load_checkpoints()
+            self.model.set_fixedframe(ret)         # identical to original side-effect
         if (not self.cfg.fine_model_and_render.dynamic_rgbnet
             and self.args.training_mode > 0):
             self.cfg.fine_train.lrate_rgbnet = 0
@@ -185,7 +179,6 @@ class Trainer:
         return rgb_l, ro_l, rd_l, vd_l, imsz_l, fid_l, lambda: next(sampler)
 
 
-
     # -------------------------------------------------------------------------
     # Training utilities
     # -------------------------------------------------------------------------
@@ -221,9 +214,6 @@ class Trainer:
             to_dev = lambda x: x.to(self.device)
             target, ro, rd, vd = map(to_dev, (target, ro, rd, vd))
         
-        if step > 1:
-            self.model.run_codec_once()
-
         render = self.model(ro, rd, vd, frame_ids=fid_b, global_step=step,
                             mode='feat',
                             near=self.data['near'], far=self.data['far'],
@@ -254,8 +244,6 @@ class Trainer:
 
 
         loss += self.cfg.fine_train.weight_l1_loss * self.model.compute_k0_l1_loss(fid_batch)
-       
-        # loss += cfg_t.lambda_bpp * self.model.last_bpp
         return loss
 
     # -------------------------------------------------------------------------
@@ -280,12 +268,6 @@ class Trainer:
                 tqdm.write(f'[step {step:6d}] loss {loss.item():.4e}  psnr {psnr:5.2f}  '
                            f'elapsed {dt/3600:02.0f}:{dt/60%60:02.0f}:{dt%60:02.0f}')
 
-                wandb.log({
-                    "train/psnr": float(psnr),
-                    "train/loss": float(loss.item()),
-                    "time/elapsed_s": dt,
-                }, step=step)
-
             if step % cfg_t.save_every == 0 and step >= cfg_t.save_after:
                 self.model.save_checkpoints()
         print('Training finished.')
@@ -297,13 +279,6 @@ if __name__ == '__main__':
     args = build_arg_parser().parse_args()
     cfg  = Config.fromfile(args.config)
     cfg.data.frame_ids = args.frame_ids
-
-    # initialize wandb
-    wandb.init(
-      project="dcvc_triplane",
-      name=cfg.expname,
-      config=vars(args)
-    )
 
     if torch.cuda.is_available():
         torch.set_default_tensor_type('torch.cuda.FloatTensor')

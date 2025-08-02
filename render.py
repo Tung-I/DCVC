@@ -227,6 +227,9 @@ if __name__=='__main__':
         python render.py --config  TeTriRF/configs/N3D/coffee_martini.py \
             --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19\
                  --render_test --startframe 0 --numframe 20  --reald
+
+        python render.py --config  TeTriRF/configs/N3D/flame_steak_image.py \
+            --frame_ids 0 --render_test --startframe 0 --numframe 20  --reald
     """
     parser = config_parser()
     args = parser.parse_args()

@@ -1,6 +1,6 @@
 _base_ = '../default.py'
 expname = 'flame_steak_dcvc'
-ckptname = 'flame_steak'
+ckptname = 'flame_steak_old'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/out_triplane'
 
 data = dict(
@@ -29,7 +29,8 @@ fine_model_and_render = dict(
 _k = 1
 fine_train = dict(
     ray_sampler='flatten',
-	N_iters=2000,
+	N_iters=20000,
+    N_val=500,               # number of validation rays
 	N_rand=5000,   
 	tv_every=1,                   # count total variation loss every tv_every step
     tv_after=100,                   # count total variation loss from tv_from step
@@ -46,8 +47,12 @@ fine_train = dict(
     lrate_density=1e-1,           # lr of density voxel grid
     lrate_k0=1e-1,                # lr of color/feature voxel grid
     lrate_rgbnet=1e-3,            # lr of the mlp to preduct view-dependent color
-    comp_every = 1,          # compress every comp_every steps
-    lambda_bpp = 0.1,          # weight of bpp loss
+    lambda_bpp = 0.01,          # weight of bpp loss
+	save_every = 50,          # save every save_every steps
+    save_after = 100,          # save after save_after steps
+    vis_every = 500,          # visualize every vis_every steps
+    qp = 0,  # quantization parameter for DCVC codec
+	comp_every = 100,          # compress every comp_every steps
 )
 
 coarse_train = dict(

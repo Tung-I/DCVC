@@ -1,5 +1,6 @@
 _base_ = '../default.py'
-expname = 'flame_steak'
+expname = 'flame_steak_image_dcvc'
+ckptname = 'flame_steak_image'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/out_triplane'
 
 data = dict(
@@ -10,15 +11,15 @@ data = dict(
 	xyz_max = [ 1.4,   1.4,  0.6],
 	load2gpu_on_the_fly=True,
     test_frames = [0],
-	factor = 3,
+	factor = 2,
 )
 fine_model_and_render = dict(
-	num_voxels=192**3,
-	num_voxels_base=192**3,
+	num_voxels=210**3,
+	num_voxels_base=210**3,
 	k0_type='PlaneGrid',
 	rgbnet_dim=36,
     rgbnet_width=128,
-    mpi_depth=256,
+    mpi_depth=280,
 	stepsize=1,
 	fast_color_thres = 1.0/256.0/80,
     viewbase_pe = 2,
@@ -45,8 +46,14 @@ fine_train = dict(
     lrate_density=1e-1,           # lr of density voxel grid
     lrate_k0=1e-1,                # lr of color/feature voxel grid
     lrate_rgbnet=1e-3,            # lr of the mlp to preduct view-dependent color
-    save_every = 2000,          # save every save_every steps
-    save_after = 20000,          # save after save_after steps
+    lambda_bpp = 0.01,          # weight of bpp loss
+	save_every = 50,          # save every save_every steps
+    save_after = 100,          # save after save_after steps
+    vis_every = 500,          # visualize every vis_every steps
+    lambda_min = 1,
+    lambda_max = 768,
+    qp_pool = [0, 16, 32, 48, 63],
+    qp = 48,
 )
 
 coarse_train = dict(
