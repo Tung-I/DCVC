@@ -64,6 +64,7 @@ def config_parser():
     parser.add_argument("--qmode", type=str, default='global', choices=["global", "per_channel"])
     parser.add_argument('--strategy', type=str, default='tiling', choices=['tiling', 'separate', 'grouped', 'correlation', 'flatfour'],
                         help='tiling: original; separate: one channel per stream; grouped: RGB triplets + leftover')
+    parser.add_argument("--aware", action='store_true', help='use compressed DCVC data or not')
     return parser
 
 def seed_everything():
@@ -229,7 +230,9 @@ if __name__=='__main__':
                  --render_test --startframe 0 --numframe 20  --reald
 
         python render.py --config  TeTriRF/configs/N3D/flame_steak_image.py \
-            --frame_ids 0 --render_test --startframe 0 --numframe 20  --reald
+            --frame_ids 0 --render_test --startframe 0 --reald
+
+        python render.py --config  TeTriRF/configs/N3D/flame_steak_image.py --frame_ids 0 --render_test --startframe 0 --qp 40 --numframe 1
     """
     parser = config_parser()
     args = parser.parse_args()
@@ -276,6 +279,10 @@ if __name__=='__main__':
                 ckpt_path = os.path.join(cfg.basedir, cfg.expname, 
                                             f"dcvc_triplanes_{S:02d}_{N:02d}_qp{qp}_{strategy}", 
                                             f"fine_last_{frame_id}.tar")
+            elif args.aware:
+                ckpt_path = os.path.join(cfg.basedir, cfg.expname, f"compressed_{qp}_fine_last_{frame_id}.tar")
+                testsavedir = os.path.join(cfg.basedir, cfg.expname, f"compressed_{qp}_fine_last_{frame_id}", 'render_test')
+               
             else:
                 testsavedir = os.path.join(cfg.basedir, cfg.expname, 
                                             f"triplanes_{S:02d}_{N:02d}_qp{qp}_{strategy}_{args.qmode}",

@@ -300,8 +300,8 @@ if __name__ == '__main__':
 
     # initialize wandb
     wandb.init(
-      project="dcvc_triplane",
-      name=cfg.expname,
+      project="image_dcvc_flame_steak",
+      name=cfg.wandbname,
       config=vars(args)
     )
 

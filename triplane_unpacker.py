@@ -12,6 +12,8 @@ python image2plane.py \
     --qp 22 \
     --strategy correlation \
     --qmode per_channel
+
+python triplane_unpacker.py   --logdir logs/out_triplane/flame_steak_image   --numframe 1 --startframe 0   --qp 40   --strategy tiling   --qmode global
 """
 
 import os

@@ -7,6 +7,7 @@ from torch import Tensor
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import copy
 
 from .masked_adam import MaskedAdam
 
@@ -15,6 +16,81 @@ from .masked_adam import MaskedAdam
 '''
 mse2psnr = lambda x : -10. * torch.log10(x)
 to8b = lambda x : (255*np.clip(x,0,1)).astype(np.uint8)
+
+def create_optimizer_or_freeze_model_dcvc_triplane(model, cfg_train, global_step, codec_params=None, sandwich_params=None):
+    """
+    To-do: what is skip_zero_grad
+    """
+    decay_steps = cfg_train.lrate_decay * 1000
+    decay_factor = 0.1 ** (global_step/decay_steps)
+
+    param_group = []
+    for k in cfg_train.keys():
+        if not k.startswith('lrate_'):
+            continue
+        k = k[len('lrate_'):]
+
+        if k=='decay':
+            continue
+        
+        if k=='dcvc':
+            lr = getattr(cfg_train, f'lrate_{k}') * decay_factor
+            if len(codec_params):
+                param_group.append({'params': codec_params, 'lr': lr, 'skip_zero_grad': (k in cfg_train.skip_zero_grad_fields)})
+
+        if k=='sandwich':
+            lr = getattr(cfg_train, f'lrate_{k}') * decay_factor
+            if len(sandwich_params):
+                param_group.append({'params': sandwich_params, 'lr': lr, 'skip_zero_grad': (k in cfg_train.skip_zero_grad_fields)})
+
+        if k=='rgbnet':
+            param = getattr(model, k)
+            if param is None:
+                print(f'create_optimizer_or_freeze_model: param {k} not exist')
+                continue
+
+            lr = getattr(cfg_train, f'lrate_{k}') * decay_factor
+            if lr > 0:
+                print(f'create_optimizer_or_freeze_model: param {k} lr {lr}')
+                if isinstance(param, nn.Module):
+                    param = param.parameters()
+                    param_group.append({'params': param, 'lr': lr, 'skip_zero_grad': (k in cfg_train.skip_zero_grad_fields)})
+
+            else:
+                print(f'create_optimizer_or_freeze_model: param {k} freeze')
+                param.requires_grad = False
+        else:
+            for frameid in model.dvgos.keys():
+
+                if not hasattr(model.dvgos[frameid], k):
+                    print(f'create_optimizer_or_freeze_model: param {k} not exist')
+                    continue
+
+                param = getattr(model.dvgos[frameid], k)
+
+                if int(frameid) in model.fixed_frame:
+                    print(f'create_optimizer_or_freeze_model: param {k} freeze [previous frames]')
+                    param.requires_grad = False
+                    continue
+
+
+                lr = getattr(cfg_train, f'lrate_{k}') * decay_factor
+                if lr > 0:
+                    print(f'create_optimizer_or_freeze_model: param {k} lr {lr}')
+                    if isinstance(param, nn.Module):
+                        param = param.parameters()
+                        param_group.append({'params': param, 'lr': lr, 'skip_zero_grad': (k in cfg_train.skip_zero_grad_fields)})
+
+                else:
+                    print(f'create_optimizer_or_freeze_model: param {k} freeze')
+                    param.requires_grad = False
+
+    for gi, g in enumerate(param_group):
+        for p in g['params']:
+            if p.dtype != torch.float32:
+                raise RuntimeError(f"Optimizer group {gi} contains {p.dtype} param {p.shape}; must be float32.")
+  
+    return MaskedAdam(param_group)
 
 def create_optimizer_or_freeze_model(model, cfg_train, global_step):
     decay_steps = cfg_train.lrate_decay * 1000

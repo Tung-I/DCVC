@@ -25,11 +25,14 @@ import math
 from TeTriRF.lib import dvgo, dmpigo, dvgo_video, dcvc_dvgo_video, utils      # unchanged
 from TeTriRF.lib.load_data import load_data
 from torch_efficient_distloss import flatten_eff_distloss
+from TeTriRF.lib.plane_codec_dcvc import collect_trainable_iframe_params, collect_trainable_sandwich_params
 
 
 """
 Usage:
-    python train_image_dcvc_triplane.py --config TeTriRF/configs/N3D/flame_steak_image_dcvc.py --frame_ids 0 --training_mode 1
+    python train_image_dcvc_triplane.py --config TeTriRF/configs/N3D/flame_steak_image_dcvc.py --frame_ids 0 --training_mode 1 --resume
+    python train_image_dcvc_triplane.py --config TeTriRF/configs/N3D/flame_steak_image_dcvc_sandwich.py --frame_ids 0  --resume
+    python train_image_dcvc_triplane.py --config TeTriRF/configs/N3D/flame_steak_image_dcvc_qp12.py --frame_ids 0 
 """
 
 # ------------------------------------------------------------------------------
@@ -40,9 +43,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument('--config', required=True)
     p.add_argument('--frame_ids', nargs='+', type=int, help='List of frame IDs')
     p.add_argument("--seed", type=int, default=777)
-    p.add_argument("--training_mode", type=int, default=0)
+    p.add_argument("--training_mode", type=int, default=1)
     # misc I/O
-    p.add_argument("--i_print", type=int, default=100)
+    p.add_argument("--i_print", type=int, default=1000)
     p.add_argument("--render_only", action='store_true')
     p.add_argument("--no_reload", action='store_true')
     p.add_argument("--no_reload_optimizer", action='store_true')
@@ -80,10 +83,6 @@ def load_dataset(cfg: Config) -> Dict:
     data['poses']  = torch.Tensor(data['poses'])        # stays CUDA by default
     return data
 
-
-# ------------------------------------------------------------------------------
-# 4. Core trainer
-# ------------------------------------------------------------------------------
 @dataclass
 class Trainer:
     """Stateful wrapper around the whole TeTriRF fine-stage training loop."""
@@ -106,45 +105,47 @@ class Trainer:
     def __post_init__(self):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self._build_model_and_opt()
-        
-        wandb.watch(self.model, log="all", log_freq=self.args.i_print)
-
         self._build_rays()
+        # self.lambda_bpp = self.qp_to_lambda(self.cfg.fine_train.dcvc_qp)
+        self.lambda_bpp = cfg.fine_train.lambda_bpp
 
-        self.qp = self.cfg.fine_train.qp
-        self.lambda_bpp = self.qp_to_lambda(self.qp)
+        wandb.watch(self.model, log="all", log_freq=self.args.i_print)
 
     def _build_model_and_opt(self):
         xyz_min = torch.tensor(self.cfg.data.xyz_min)
         xyz_max = torch.tensor(self.cfg.data.xyz_max)
         ids      = torch.unique(self.data['frame_ids']).cpu().tolist()
+       
+        self.model = dcvc_dvgo_video.DCVC_DVGO_Video(
+            ids, xyz_min, xyz_max, self.cfg, 
+            dcvc_qp = self.cfg.fine_train.dcvc_qp, freeze_dcvc_enc=self.cfg.fine_model_and_render.freeze_dcvc_enc, 
+            freeze_dcvc_dec=self.cfg.fine_model_and_render.freeze_dcvc_dec, convert_ycbcr=self.cfg.fine_model_and_render.convert_ycbcr
+        ).to(self.device)
+        
 
-        # self.model = dvgo_video.DirectVoxGO_Video(ids, xyz_min, xyz_max, self.cfg).to(self.device)
-        self.model = dcvc_dvgo_video.DCVC_DVGO_Video(ids, xyz_min, xyz_max, self.cfg, dcvc_qp = self.cfg.fine_train.qp).to(self.device)
-        ret = self.model.load_checkpoints()
-        # if args.resume:
-        #     ret = self.model.load_checkpoints()
-        #     self.model.set_fixedframe(ret)         # identical to original side-effect
-        if (not self.cfg.fine_model_and_render.dynamic_rgbnet
-            and self.args.training_mode > 0):
-            self.cfg.fine_train.lrate_rgbnet = 0
-        self.optimizer = utils.create_optimizer_or_freeze_model_dvgovideo(
-            self.model, self.cfg.fine_train, global_step=0)
+        if args.resume:
+            _ = self.model.load_checkpoints()
+
+        codecs_params = collect_trainable_iframe_params(self.model.codec.i_frame_net)
+
+        if self.cfg.fine_model_and_render.sandwich:
+            sandwich_params = collect_trainable_sandwich_params(self.model.codec)
+        else:
+            sandwich_params = None
+            
+        self.optimizer = utils.create_optimizer_or_freeze_model_dcvc_triplane(
+                self.model, self.cfg.fine_train, global_step=0, codec_params=codecs_params, sandwich_params=sandwich_params
+        )
 
     # -------------------------------------------------------------------------
     # Dataset → DataLoader
     # -------------------------------------------------------------------------
     def _build_rays(self):
-        """Collect rays exactly the same way the original script does ― keep the
-        six Python lists in memory and return an index-generator.  We still create
-        a dummy DataLoader so later refactor (multi-GPU, etc.) is easy, but we no
-        longer rely on a non-existent `get_by_indices()` method."""
         (self.rgb_l, self.ro_l, self.rd_l,
         self.vd_l, self.sz_l, self.fid_l,
         sampler_fn) = self._gather_training_rays()
 
         self.batch_sampler = sampler_fn            # -> (camera_id , sel_idx)
-        # keep a DL in case you want to push the loop into torch.compile later
         from torch.utils.data import DataLoader
         class _Dummy(torch.utils.data.Dataset):
             def __len__(self): return 1
@@ -152,7 +153,6 @@ class Trainer:
         self.ray_loader = DataLoader(_Dummy(), batch_size=1)
 
     def _gather_training_rays(self, tmasks=None):
-        """Bit-for-bit port of the inline helper in run_multiframe.py."""
         cfg, data, model = self.cfg, self.data, self.model
         HW, Ks, poses, frame_ids = data['HW'], data['Ks'], data['poses'], data['frame_ids']
         uniq_ids = torch.unique(frame_ids, sorted=True).cpu().tolist()
@@ -188,8 +188,6 @@ class Trainer:
         sampler = dvgo.batch_indices_generator_MF(rgb_l, cfg.fine_train.N_rand)
         return rgb_l, ro_l, rd_l, vd_l, imsz_l, fid_l, lambda: next(sampler)
 
-
-
     # -------------------------------------------------------------------------
     # Training utilities
     # -------------------------------------------------------------------------
@@ -200,8 +198,12 @@ class Trainer:
                       - (cfg_t.pg_scale + cfg_t.pg_scale2).index(step) - 1)
             vox = int(self.cfg.fine_model_and_render.num_voxels / (2 ** n_left))
             self.model.scale_volume_grid(vox)
-            self.optimizer = utils.create_optimizer_or_freeze_model_dvgovideo(
-                self.model, cfg_t, global_step=0)
+            # self.optimizer = utils.create_optimizer_or_freeze_model_dvgovideo(
+            #     self.model, cfg_t, global_step=0)
+            self.optimizer = utils.create_optimizer_or_freeze_model_dcvc_triplane(
+                self.model, cfg_t, global_step=0
+            )
+            print(f'Progressive growing to {vox} voxels at step {step}.')
             for fid in self.model.dvgos.keys():
                 if int(fid) in self.model.fixed_frame: continue
                 self.model.dvgos[fid].act_shift -= cfg_t.decay_after_scale / (2 if step in cfg_t.pg_scale2 else 1)
@@ -209,7 +211,7 @@ class Trainer:
 
     def qp_to_lambda(self, qp):
         cfg_t = self.cfg.fine_train
-        lambda_val = math.log(cfg_t.lambda_min) + qp / (len(cfg_t.qp_pool) - 1) * (
+        lambda_val = math.log(cfg_t.lambda_min) + qp / (64 - 1) * (
                 math.log(cfg_t.lambda_max) - math.log(cfg_t.lambda_min))
         lambda_val = math.pow(math.e, lambda_val)
         return lambda_val
@@ -221,7 +223,6 @@ class Trainer:
         cam, sel_np = self.batch_sampler()
         sel = torch.from_numpy(sel_np)
 
-        # identical slicing to original script
         target  = self.rgb_l[cam][sel]
         ro      = self.ro_l[cam][sel]
         rd      = self.rd_l[cam][sel]
@@ -232,9 +233,14 @@ class Trainer:
             to_dev = lambda x: x.to(self.device)
             target, ro, rd, vd = map(to_dev, (target, ro, rd, vd))
         
+        # Encode and decode Tri-Planes
+        plane_psnr_dict, bpp_dict = self.model.run_codec_once()
+        total_bpp = 0
+        for k in bpp_dict.keys():
+            total_bpp += bpp_dict[k]
 
-        self.model.run_codec_once()
 
+        # Compute rendering loss
         render = self.model(ro, rd, vd, frame_ids=fid_b, global_step=step,
                             mode='feat',
                             near=self.data['near'], far=self.data['far'],
@@ -244,13 +250,24 @@ class Trainer:
                             inverse_y=self.cfg.data.inverse_y,
                             flip_x=self.cfg.data.flip_x, flip_y=self.cfg.data.flip_y)
 
-        loss = self._compute_loss(render, target, step, fid_b)
+        loss = self._compute_loss(render, target, step, fid_b, total_bpp)
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
-        self.optimizer.step()
-        return loss
 
-    def _compute_loss(self, render, target, step, fid_batch):
+        # Total-variation regularization on voxel grids
+        cfg_train = self.cfg.fine_train
+        if step<cfg_train.tv_before and step>cfg_train.tv_after and step%cfg_train.tv_every==0:
+            if cfg_train.weight_tv_density>0:
+                self.model.density_total_variation_add_grad(
+                    cfg_train.weight_tv_density/len(ro), step<cfg_train.tv_dense_before, fid_b)
+            if cfg_train.weight_tv_k0>0:
+                self.model.k0_total_variation_add_grad(
+                    cfg_train.weight_tv_k0/len(ro), step<cfg_train.tv_dense_before, fid_b)
+
+        self.optimizer.step()
+        return loss, plane_psnr_dict, total_bpp
+
+    def _compute_loss(self, render, target, step, fid_batch, total_bpp):
         cfg_t = self.cfg.fine_train
         loss = cfg_t.weight_main * F.mse_loss(render['rgb_marched'], target)
         psnr = utils.mse2psnr(loss.detach()); self._psnr_buffer.append(psnr.item())
@@ -263,10 +280,11 @@ class Trainer:
             loss += cfg_t.weight_distortion * flatten_eff_distloss(
                 render['weights'], render['s'], 1/render['n_max'], render['ray_id'])
 
-
         loss += self.cfg.fine_train.weight_l1_loss * self.model.compute_k0_l1_loss(fid_batch)
-       
-        loss += self.lambda_bpp * self.model.last_bpp
+
+
+        loss += self.lambda_bpp * total_bpp
+
         return loss
 
     # -------------------------------------------------------------------------
@@ -279,10 +297,10 @@ class Trainer:
             if (step+500) % 1000 == 0:
                 self.model.update_occupancy_cache()
             self._progressive_grow(step)
-            loss = self._train_step(step)
+            loss, plane_psnr_dict, total_bpp  = self._train_step(step)
 
             # LR decay
-            decay = 0.1 ** (1 / (cfg_t.lrate_decay*1000))
+            decay = 0.1 ** (1 / (cfg_t.lrate_decay*1000)) # cfg_t.lrate_decay = 20
             for g in self.optimizer.param_groups: g['lr'] *= decay
 
             if step % self.args.i_print == 0 or step == 1:
@@ -291,9 +309,14 @@ class Trainer:
                 tqdm.write(f'[step {step:6d}] loss {loss.item():.4e}  psnr {psnr:5.2f}  '
                            f'elapsed {dt/3600:02.0f}:{dt/60%60:02.0f}:{dt%60:02.0f}')
 
+            if step % self.args.i_print == 0:
                 wandb.log({
                     "train/psnr": float(psnr),
                     "train/loss": float(loss.item()),
+                    "train/xy_plane_psnr": float(plane_psnr_dict['xy']),
+                    "train/xz_plane_psnr": float(plane_psnr_dict['xz']),
+                    "train/yz_plane_psnr": float(plane_psnr_dict['yz']),
+                    "train/total_bpp": float(total_bpp),
                     "time/elapsed_s": dt,
                 }, step=step)
 
@@ -311,7 +334,7 @@ if __name__ == '__main__':
 
     # initialize wandb
     wandb.init(
-      project="flame_steak_image_dcvc",
+      project=cfg.wandbprojectname,
       name=cfg.expname,
       config=vars(args)
     )

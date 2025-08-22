@@ -19,6 +19,7 @@ from tqdm import tqdm, trange
 import numpy as np
 import imageio
 from mmengine.config import Config
+import wandb
 
 from TeTriRF.lib import dvgo, dmpigo, dvgo_video, utils      # unchanged
 from TeTriRF.lib.load_data import load_data
@@ -104,6 +105,7 @@ class Trainer:
     def __post_init__(self):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self._build_model_and_opt()
+        wandb.watch(self.model, log="all", log_freq=self.args.i_print)
         self._build_rays()
 
     def _build_model_and_opt(self):
@@ -232,7 +234,8 @@ class Trainer:
     def _compute_loss(self, render, target, step, fid_batch):
         cfg_t = self.cfg.fine_train
         loss = cfg_t.weight_main * F.mse_loss(render['rgb_marched'], target)
-        psnr = utils.mse2psnr(loss.detach()); self._psnr_buffer.append(psnr.item())
+        psnr = utils.mse2psnr(loss.detach())
+        self._psnr_buffer.append(psnr.item())
 
         if cfg_t.weight_entropy_last > 0:
             p = render['alphainv_last'].clamp(1e-6,1-1e-6)
@@ -267,6 +270,12 @@ class Trainer:
                 psnr = np.mean(self._psnr_buffer); self._psnr_buffer.clear()
                 tqdm.write(f'[step {step:6d}] loss {loss.item():.4e}  psnr {psnr:5.2f}  '
                            f'elapsed {dt/3600:02.0f}:{dt/60%60:02.0f}:{dt%60:02.0f}')
+                
+                wandb.log({
+                    "train/psnr": float(psnr),
+                    "train/loss": float(loss.item()),
+                    "time/elapsed_s": dt,
+                }, step=step)
 
             if step % cfg_t.save_every == 0 and step >= cfg_t.save_after:
                 self.model.save_checkpoints()
@@ -279,6 +288,13 @@ if __name__ == '__main__':
     args = build_arg_parser().parse_args()
     cfg  = Config.fromfile(args.config)
     cfg.data.frame_ids = args.frame_ids
+
+
+    wandb.init(
+      project=cfg.wandbprojectname,
+      name=cfg.expname,
+      config=vars(args)
+    )
 
     if torch.cuda.is_available():
         torch.set_default_tensor_type('torch.cuda.FloatTensor')

@@ -1,7 +1,7 @@
 _base_ = '../default.py'
-expname = 'flame_steak_image'
-ckptname = None
-wandbprojectname = 'image_dcvc_flame_steak'
+expname = 'flame_steak_image_dcvc_256_rgbnet'
+wandbname = 'flame_steak_image_dcvc_256_rgbnet'
+ckptname = 'flame_steak_image'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/out_triplane'
 
 data = dict(
@@ -19,7 +19,7 @@ fine_model_and_render = dict(
 	num_voxels_base=210**3,
 	k0_type='PlaneGrid',
 	rgbnet_dim=36,
-    rgbnet_width=128,
+    rgbnet_width=256,
     mpi_depth=280,
 	stepsize=1,
 	fast_color_thres = 1.0/256.0/80,
@@ -30,9 +30,9 @@ fine_model_and_render = dict(
 _k = 1
 fine_train = dict(
     ray_sampler='flatten',
-	N_iters=40000,
+	N_iters=42000,
 	N_rand=5000,   
-	tv_every=1,                   # count total variation loss every tv_every step
+	tv_every=5,                   # count total variation loss every tv_every step
     tv_after=100,                   # count total variation loss from tv_from step
     tv_before=35000,                  # count total variation before the given number of iterations
     tv_dense_before=35000,            # count total variation densely before the given number of iterations
@@ -47,8 +47,14 @@ fine_train = dict(
     lrate_density=1e-1,           # lr of density voxel grid
     lrate_k0=1e-1,                # lr of color/feature voxel grid
     lrate_rgbnet=1e-3,            # lr of the mlp to preduct view-dependent color
-    save_every = 2000,          # save every save_every steps
+    lambda_bpp = 0.01,          # weight of bpp loss
+	save_every = 2000,          # save every save_every steps
     save_after = 10000,          # save after save_after steps
+    vis_every = 500,          # visualize every vis_every steps
+    lambda_min = 1,
+    lambda_max = 768,
+    qp_pool = [0, 16, 32, 48, 63],
+    qp = 48,
 )
 
 coarse_train = dict(

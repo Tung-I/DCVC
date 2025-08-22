@@ -18,11 +18,13 @@ from .sh import eval_sh
 import time
 from torch.serialization import safe_globals
 from .dvgo_video import RGB_Net, RGB_SH_Net
-from .plane_codec_dcvc import DCVCPlaneCodec, DCVCImageCodec
+from .plane_codec_dcvc import DCVCPlaneCodec, DCVCImageCodec, DCVCImageCodecInfer
 
 
 class DCVC_DVGO_Video(torch.nn.Module):
-    def __init__(self, frameids, xyz_min, xyz_max, cfg=None, device='cuda', dcvc_qp=0):
+    def __init__(self, frameids, xyz_min, xyz_max, cfg=None, device='cuda', 
+                 dcvc_qp=0, freeze_dcvc_enc=True, freeze_dcvc_dec=True, 
+                 convert_ycbcr=True, infer_mode=False):
         super(DCVC_DVGO_Video, self).__init__()
 
         self.xyz_min = xyz_min
@@ -38,12 +40,32 @@ class DCVC_DVGO_Video(torch.nn.Module):
         self.last_bpp   = torch.tensor(0., device=device)
         self.planes_are_dirty = True   # set True whenever you *update* planes
 
-        if len(self.frameids) == 1:
-            self.codec = DCVCImageCodec(qp=dcvc_qp, device=device)
+        self.infer_mode = infer_mode
+        if not self.infer_mode:
+            if len(self.frameids) == 1:
+                in_channels = int(cfg.fine_model_and_render.rgbnet_dim / 3)
+                self.codec = DCVCImageCodec(
+                    qp=cfg.fine_train.dcvc_qp, device=device, in_channels=in_channels,
+                    unet_pre_base=cfg.fine_model_and_render.unet_pre_base,
+                    unet_post_base=cfg.fine_model_and_render.unet_post_base,
+                    sandwich=cfg.fine_model_and_render.sandwich,
+                )
+            else:
+                self.codec = DCVCPlaneCodec(qp=dcvc_qp, device=device)
         else:
-            self.codec = DCVCPlaneCodec(qp=dcvc_qp, device=device)
+            if len(self.frameids) == 1:
+                in_channels = int(cfg.fine_model_and_render.rgbnet_dim / 3)
+                self.codec = DCVCImageCodecInfer(
+                    device=device, qp=cfg.fine_train.dcvc_qp, in_channels=in_channels
+                )
+            else:
+                raise RuntimeError("DCVCImageCodecInfer only supports single frame input.")
 
-    @torch.enable_grad()            # stay in graph
+        
+        self.triplane_frozen = False
+        self.rgbnet_frozen = False
+
+
     def run_codec_once(self):
         """Encode-decode xy/xz/yz planes; store distorted planes & bpp."""
         planes_by_axis = {'xy': [], 'xz': [], 'yz': []}
@@ -52,11 +74,14 @@ class DCVC_DVGO_Video(torch.nn.Module):
             for ax in planes_by_axis:
                 planes_by_axis[ax].append(getattr(k0, f'{ax}_plane').squeeze(0))
 
-        total_bpp = 0.
+        bpp_dict = {}
+        plane_psnr_dict = {}
         for ax, seq_list in planes_by_axis.items():
             seq = torch.stack(seq_list, dim=0)         # [T,C,H,W]
-            recon, bpp = self.codec(seq)
-            total_bpp += bpp
+            H, W = seq.shape[2:4]
+            recon, bpp, plane_psnr = self.codec(seq)
+            bpp_dict[ax] = bpp
+            plane_psnr_dict[ax] = plane_psnr
             # write back
             idx = 0
             for fid in self.frameids:
@@ -66,8 +91,7 @@ class DCVC_DVGO_Video(torch.nn.Module):
                 getattr(k0, f'{ax}_plane').data = plane_t
                 idx += 1
 
-        self.last_bpp = total_bpp / 3        # average over axes
-        self.planes_are_dirty = False        # we’re now in sync
+        return plane_psnr_dict, bpp_dict
 
 
     def forward(self, rays_o, rays_d, viewdirs, frame_ids, global_step=None, mode='feat', **render_kwargs):
@@ -78,14 +102,6 @@ class DCVC_DVGO_Video(torch.nn.Module):
         ret_frame = self.dvgos[str(frameid)](rays_o, rays_d, viewdirs, shared_rgbnet= self.rgbnet, global_step=global_step, mode=mode, **render_kwargs)
 
         return ret_frame
-
-    def get_kwargs(self):
-        return {
-            'frameids': self.frameids,
-            'xyz_min': self.xyz_min,
-            'xyz_max': self.xyz_max,
-            'viewbase_pe': self.viewbase_pe,
-        }
 
     def initial_models(self):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -131,11 +147,16 @@ class DCVC_DVGO_Video(torch.nn.Module):
             rgbnet_width = model_kwargs['rgbnet_width']
             rgbnet_depth = model_kwargs['rgbnet_depth']
             self.rgbnet = RGB_SH_Net(dim0=dim0, rgbnet_width=rgbnet_width, rgbnet_depth=rgbnet_depth, deg=2)
-            
-        
         
         print('*** models creation completed.',self.frameids)
 
+    def get_kwargs(self):
+        return {
+            'frameids': self.frameids,
+            'xyz_min': self.xyz_min,
+            'xyz_max': self.xyz_max,
+            'viewbase_pe': self.viewbase_pe,
+        }
 
     def load_checkpoints(self):
 
@@ -201,6 +222,20 @@ class DCVC_DVGO_Video(torch.nn.Module):
         }
         torch.save(rgbnet_ckpt, rgbnet_ckpt_path)
         print(f"RGBNet checkpoint saved to {rgbnet_ckpt_path}")
+
+    def save_infer_checkpoints(self, qp):
+        cfg = self.cfg
+        for frameid in self.frameids:
+            if frameid in self.fixed_frame:
+                continue
+            frameid = str(frameid)
+            ckpt_path = os.path.join(cfg.basedir, cfg.expname, f'compressed_{qp}_fine_last_{frameid}.tar')
+            ckpt = {
+                'model_state_dict': self.dvgos[frameid].state_dict(),
+                'model_kwargs': self.dvgos[frameid].get_kwargs(),
+            }
+            torch.save(ckpt, ckpt_path)
+            print(f"Frame {frameid}'s checkpoint saved to {ckpt_path}")
 
     def set_fixedframe(self, ids):
         """Set the fixed frame ids for the model.
@@ -301,6 +336,41 @@ class DCVC_DVGO_Video(torch.nn.Module):
             frameid = str(frameid)
             res.append(self.dvgos[frameid].update_occupancy_cache())
         return np.mean(res)
+    
+    def _set_requires_grad_module(self, module: torch.nn.Module, flag: bool):
+        for p in module.parameters(recurse=True):
+            p.requires_grad_(flag)
+
+    def freeze_dvgo(self):
+        """
+        Freeze Tri-Plane parameters (per-frame dvgo modules). Optionally also freeze shared rgbnet.
+        Does NOT touch the codec sandwich (self.codec), so it stays trainable.
+        Recreate your optimizer after calling this.
+        """
+        # freeze all per-frame DVGO/MPIGO params (density & k0 grids, etc.)
+        for fid, m in self.dvgos.items():
+            self._set_requires_grad_module(m, False)
+        self.triplane_frozen = True
+
+        # # optionally freeze the shared RGB head
+        # if freeze_rgbnet and hasattr(self, "rgbnet") and self.rgbnet is not None:
+        #     self._set_requires_grad_module(self.rgbnet, False)
+        #     self.rgbnet_frozen = True
+        
+
+    def unfreeze_dvgo(self):
+        """
+        Unfreeze Tri-Plane parameters (per-frame dvgo modules). Optionally unfreeze shared rgbnet.
+        Codec stays trainable (or frozen, if you set it elsewhere).
+        Recreate your optimizer after calling this.
+        """
+        for fid, m in self.dvgos.items():
+            self._set_requires_grad_module(m, True)
+        self.triplane_frozen = False
+
+        # if unfreeze_rgbnet and hasattr(self, "rgbnet") and self.rgbnet is not None:
+        #     self._set_requires_grad_module(self.rgbnet, True)
+        #     self.rgbnet_frozen = False
 
     
 

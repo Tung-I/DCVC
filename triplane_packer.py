@@ -12,7 +12,7 @@ Packing strategies
 4. **correlation** – *new*: greedy correlation‑based clustering of the most
                      correlated 3‑channel groups
 
-Quantisation modes
+Quantisation modesp`
 ------------------
 * **global   (default)**  – fixed numeric range [low_bound, high_bound]
 * **per_channel**         – individual min/max range for each channel (frame‑wise)
@@ -26,6 +26,8 @@ python triplane_packer.py \
     --strategy tiling \
     --qmode per_channel
 ```
+
+python triplane_packer.py --logdir logs/out_triplane/flame_steak_image --numframe 1 --startframe 0 --strategy tiling --qmode global
 """
 
 import os

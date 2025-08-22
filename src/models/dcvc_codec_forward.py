@@ -8,80 +8,108 @@ from src.utils.transforms import rgb2ycbcr, ycbcr2rgb
 
 
 def dcvc_image_codec_forward(
-        image_tensor: torch.Tensor,
-        qp: int,
-        model: DMCI,
-        device: str = 'cuda'
-) -> Dict:
+    image_tensor: torch.Tensor,
+    qp: int,
+    model: DMCI,
+    device: str = 'cuda',
+    convert_ycbcr: bool = True,
+):
     """
-    DCVC Image Compression forward pass for training.
-
-    Args:
-        image_tensor: RGB image tensor of shape (B, 3, H, W) or video tensor (B, T, 3, H, W) in range [0, 1]
-        qp: Quantization parameter (0-63), lower = higher quality
-        model: Pre-initialized DMCI model
-        device: Device to run model on
-
-    Returns:
-        dict: Contains x_hat, bpp, and shape information
+    image_tensor: (B,3,H,W) in [0,1].
+    space="ycbcr": convert RGB->YCbCr for DMCI; back to RGB after.
+    space="identity": feed as-is to DMCI and return as-is.
     """
+    in_dtype = image_tensor.dtype
     image_tensor = image_tensor.to(device)
+    T, C, H, W = image_tensor.shape
 
-    # Handle video tensor by processing frame by frame
-    if image_tensor.dim() == 5:
-        # Video tensor: process frame by frame
-        B, T, C, H, W = image_tensor.shape
-        reconstructed_frames = []
-        total_bpp = 0
-
-        for t in range(T):
-            frame = image_tensor[:, t]  # (B, 3, H, W)
-
-            # Convert to YCbCr and forward pass
-            frame_ycbcr = rgb2ycbcr(frame)
-            result = model.forward(frame_ycbcr, qp)
-
-            # Convert back to RGB
-            x_hat_ycbcr = result["x_hat"]
-            x_hat_rgb = ycbcr2rgb(x_hat_ycbcr)
-            x_hat_rgb = torch.clamp(x_hat_rgb, 0, 1)
-
-            reconstructed_frames.append(x_hat_rgb)
-            total_bpp += result["bpp"]
-
-        # Stack frames back into video tensor
-        video_tensor = torch.stack(reconstructed_frames, dim=1)  # (B, T, C, H, W)
-
-        return {
-            'x_hat': video_tensor,
-            'bpp': total_bpp / T,  # Average bpp per frame
-            'bpp_total': total_bpp,
-            'shape': (B, T, C, H, W),
-            'is_video': True,
-            'z_bpp': result.get("z_bpp", 0),  # From last frame
-            'y_bpp': result.get("y_bpp", 0),  # From last frame
-        }
+    if convert_ycbcr:
+        inp = rgb2ycbcr(image_tensor)
+        res = model.forward(inp, qp)
+        x_hat = ycbcr2rgb(res["x_hat"]).clamp_(0, 1)
     else:
-        # Image tensor: single forward pass
-        b, c, h, w = image_tensor.shape
+        res = model.forward(image_tensor, qp)
+        x_hat = res["x_hat"].clamp_(0, 1)
+    return {
+        "x_hat": x_hat.to(in_dtype), 
+        "bpp": res["bpp"], 
+        "is_video": False}
 
-        # Convert to YCbCr and forward pass
-        image_ycbcr = rgb2ycbcr(image_tensor)
-        result = model.forward(image_ycbcr, qp)
+# def dcvc_image_codec_forward(
+#         image_tensor: torch.Tensor,
+#         qp: int,
+#         model: DMCI,
+#         device: str = 'cuda'
+# ) -> Dict:
+#     """
+#     DCVC Image Compression forward pass for training.
 
-        # Convert back to RGB
-        x_hat_ycbcr = result["x_hat"]
-        x_hat_rgb = ycbcr2rgb(x_hat_ycbcr)
-        x_hat_rgb = torch.clamp(x_hat_rgb, 0, 1)
+#     Args:
+#         image_tensor: RGB image tensor of shape (B, 3, H, W) or video tensor (B, T, 3, H, W) in range [0, 1]
+#         qp: Quantization parameter (0-63), lower = higher quality
+#         model: Pre-initialized DMCI model
+#         device: Device to run model on
 
-        return {
-            'x_hat': x_hat_rgb,
-            'bpp': result["bpp"],
-            'shape': (b, c, h, w),
-            'is_video': False,
-            'z_bpp': result.get("z_bpp", 0),
-            'y_bpp': result.get("y_bpp", 0),
-        }
+#     Returns:
+#         dict: Contains x_hat, bpp, and shape information
+#     """
+#     image_tensor = image_tensor.to(device)
+
+#     # Handle video tensor by processing frame by frame
+#     if image_tensor.dim() == 5:
+#         # Video tensor: process frame by frame
+#         B, T, C, H, W = image_tensor.shape
+#         reconstructed_frames = []
+#         total_bpp = 0
+
+#         for t in range(T):
+#             frame = image_tensor[:, t]  # (B, 3, H, W)
+
+#             # Convert to YCbCr and forward pass
+#             frame_ycbcr = rgb2ycbcr(frame)
+#             result = model.forward(frame_ycbcr, qp)
+
+#             # Convert back to RGB
+#             x_hat_ycbcr = result["x_hat"]
+#             x_hat_rgb = ycbcr2rgb(x_hat_ycbcr)
+#             x_hat_rgb = torch.clamp(x_hat_rgb, 0, 1)
+
+#             reconstructed_frames.append(x_hat_rgb)
+#             total_bpp += result["bpp"]
+
+#         # Stack frames back into video tensor
+#         video_tensor = torch.stack(reconstructed_frames, dim=1)  # (B, T, C, H, W)
+
+#         return {
+#             'x_hat': video_tensor,
+#             'bpp': total_bpp / T,  # Average bpp per frame
+#             'bpp_total': total_bpp,
+#             'shape': (B, T, C, H, W),
+#             'is_video': True,
+#             'z_bpp': result.get("z_bpp", 0),  # From last frame
+#             'y_bpp': result.get("y_bpp", 0),  # From last frame
+#         }
+#     else:
+#         # Image tensor: single forward pass
+#         b, c, h, w = image_tensor.shape
+
+#         # Convert to YCbCr and forward pass
+#         image_ycbcr = rgb2ycbcr(image_tensor)
+#         result = model.forward(image_ycbcr, qp)
+
+#         # Convert back to RGB
+#         x_hat_ycbcr = result["x_hat"]
+#         x_hat_rgb = ycbcr2rgb(x_hat_ycbcr)
+#         x_hat_rgb = torch.clamp(x_hat_rgb, 0, 1)
+
+#         return {
+#             'x_hat': x_hat_rgb,
+#             'bpp': result["bpp"],
+#             'shape': (b, c, h, w),
+#             'is_video': False,
+#             'z_bpp': result.get("z_bpp", 0),
+#             'y_bpp': result.get("y_bpp", 0),
+#         }
 
 
 def dcvc_video_codec_forward(

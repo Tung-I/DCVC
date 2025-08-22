@@ -8,16 +8,16 @@ from typing import Dict, Optional, Literal, List, Tuple
 from fractions import Fraction
 
 # Import required modules from official DCVC
-from dcvc.models.video_model import DMC
-from dcvc.models.image_model import DMCI
-from dcvc.layers.cuda_inference import replicate_pad
-from dcvc.utils.common import get_state_dict
-from dcvc.utils.stream_helper import SPSHelper, NalType, write_sps, read_header, \
+from src.models.video_model import DMC
+from src.models.image_model import DMCI
+from src.layers.cuda_inference import replicate_pad
+from src.utils.common import get_state_dict
+from src.utils.stream_helper import SPSHelper, NalType, write_sps, read_header, \
     read_sps_remaining, read_ip_remaining, write_ip
-from dcvc.utils.transforms import rgb2ycbcr, ycbcr2rgb, yuv_444_to_420
+from src.utils.transforms import rgb2ycbcr, ycbcr2rgb, yuv_444_to_420
 
 
-class DCVCImageCodec:
+class DCVCImageCodecWrapper:
     """DCVC Image Compression Codec for tensor inputs."""
 
     def __init__(self, weight_path="./checkpoint/cvpr2025_image.pth.tar", device='cuda'):
@@ -33,10 +33,11 @@ class DCVCImageCodec:
         # Load model
         self.model = DMCI()
         self.model.load_state_dict(get_state_dict(weight_path))
-        # self.model.update(0.12)
-        self.model(None)
+        self.model.update(0.12)
+        # self.model(None)
         self.model = self.model.to(device)
         self.model.eval()
+
 
         print(f"Loaded DCVC image model from: {weight_path}")
 
@@ -128,6 +129,9 @@ class DCVCImageCodec:
             else:
                 # Image tensor: original behavior
                 b, c, h, w = image_tensor.shape
+                # print(f"Compressing image of shape: {image_tensor.shape}")
+                # print(f"qp: {qp}")
+                # raise Exception
 
                 # Convert and compress
                 image_ycbcr = rgb2ycbcr(image_tensor)
