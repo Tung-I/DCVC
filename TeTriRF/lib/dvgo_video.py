@@ -196,7 +196,7 @@ class DirectVoxGO_Video(torch.nn.Module):
 
 
             # allowlist numpy._core.multiarray._reconstruct
-            ckpt = torch.load(last_ckpt_path)
+            ckpt = torch.load(last_ckpt_path, weights_only=False)
 
             model_kwargs = ckpt['model_kwargs']
             if self.cfg.data.ndc:

@@ -25,7 +25,7 @@ import math
 from TeTriRF.lib import dvgo, dmpigo, dvgo_video, dcvc_dvgo_video, utils      # unchanged
 from TeTriRF.lib.load_data import load_data
 from torch_efficient_distloss import flatten_eff_distloss
-from TeTriRF.lib.plane_codec_dcvc import collect_trainable_iframe_params, collect_trainable_sandwich_params
+from TeTriRF.lib.dcvc_wrapper import collect_trainable_iframe_params, collect_trainable_sandwich_params
 
 
 """

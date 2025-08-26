@@ -8,12 +8,104 @@ import numpy as np
 import torch.nn.functional as F
 import math
 from src.models.dcvc_codec_forward import dcvc_image_codec_forward
-from src.models.dcvc_codec import DCVCImageCodecWrapper
+from src.models.dcvc_codec import DCVCImageCodec as dcvc_inference_wrapper
 from TeTriRF.lib.unet import SmallUNet, create_mlp, BoundedProjector
 from TeTriRF.lib import utils
 
 
 DCVC_ALIGN = 32
+
+class DCVCImageCodec(torch.nn.Module):
+
+    def __init__(
+            self, cfg_dcvc, device, force_zero_thres=0.12, infer_mode=False
+    ):
+        super().__init__()
+        self.device = device
+        self.i_frame_net = DMCI()
+        i_state_dict = get_state_dict(cfg_dcvc.ckpt_path)
+        self.i_frame_net.load_state_dict(i_state_dict)
+        self.i_frame_net.to(device)
+        self.i_frame_net.eval()
+        self.i_frame_net.half()
+        self.i_frame_net.update(force_zero_thres)
+        self.cfg_dcvc = cfg_dcvc
+
+        if cfg_dcvc.freeze_dcvc:
+            freeze_iframenet_all(self.i_frame_net)
+
+        self.packing_mode = cfg_dcvc.packing_mode
+        self.pack_fn   = pack_planes_to_rgb
+        self.unpack_fn = unpack_rgb_to_planes
+        self.qp = cfg_dcvc.dcvc_qp
+        self.quant_mode = cfg_dcvc.quant_mode
+        self.global_range = cfg_dcvc.global_range
+        self.align = DCVC_ALIGN
+        self.in_channels = cfg_dcvc.in_channels
+
+        self.cfg_dcvc = cfg_dcvc
+        # New: codec-local AMP toggle & dtype
+        self.use_amp = cfg_dcvc.use_amp
+        self.amp_dtype = torch.float16  # keep TriPlane in fp32, only DCVC in fp16
+    
+        self.infer_mode = infer_mode
+        
+    def forward(self, frame: torch.Tensor):
+        """
+        frame: [1, C,H,W] (float). Returns (recon_frame, bpp).
+        """
+        x = frame
+        dtype_in = x.dtype
+        assert x.shape[1] == self.in_channels, f"expected C={self.in_channels}, got {x.shape[1]}"
+
+        # Quantize feature planes to 0-1
+        x01, c_min, scale = _normalize_planes(x, mode=self.quant_mode, global_range=self.global_range)
+
+        # Pack the quantized feature planes to 3 channels (and padding)
+        y_pad, orig_size = self.pack_fn(x01, mode=self.packing_mode)
+        H2p, W2p = y_pad.shape[-2:]
+        y_pad = y_pad.to(device=self.device)
+
+        # Optimize memory layout
+        try:
+            y_pad = y_pad.contiguous(memory_format=torch.channels_last)
+        except Exception:
+            pass
+
+        # Run DCVC
+        y_half = y_pad.to(torch.float16)
+        with torch.cuda.amp.autocast(enabled=self.use_amp, dtype=self.amp_dtype):
+            result = dcvc_image_codec_forward(
+                y_half, self.qp, self.i_frame_net, device=self.device
+            )
+            x_hat_half = result['x_hat'][..., :H2p, :W2p]
+
+        # Exit AMP, cast to fp32 for numerics and to match TriPlane later
+        x_hat32 = x_hat_half.to(torch.float32)
+
+        # Unpack the reconstructed feature planes and crop to ori size
+        rec01 = self.unpack_fn(x_hat32, x01.shape[1], orig_size, mode=self.packing_mode)
+
+        # Rescale to original range
+        recon = (rec01 * scale + c_min).to(torch.float32) 
+
+        if self.quant_mode == "global":
+            peak = float(self.global_range[1] - self.global_range[0])  # = 40.0
+            mse_raw = F.mse_loss(recon, x.to(recon.dtype))
+            plane_psnr = utils.mse2psnr_with_peak(mse_raw, peak=peak)
+        else:
+            raise NotImplementedError("mse2psnr_with_peak only implemented for global mode")
+
+        # # Debug only:
+        # with torch.no_grad():
+        #     y_dbg, orig = self.pack_fn(x01, mode=self.packing_mode)  # [B,3,H2,W2]
+        #     rec01_dbg = self.unpack_fn(y_dbg, x01.shape[1], orig, mode=self.packing_mode)
+        #     err_dbg = (rec01_dbg - x01).abs().max().item()
+        #     assert err_dbg < 1e-6, f"Pack/unpack not inverse: max abs err {err_dbg}"
+
+
+        return recon, result['bpp'], plane_psnr
+
 
 class DCVCImageCodecInfer(torch.nn.Module):
     def __init__(
@@ -178,64 +270,49 @@ class DCVCPlaneCodec(torch.nn.Module):
             recon_seq = (recon_n * scale + c_min).to(dtype=dtype_in)
 
         return recon_seq, avg_bpp
-    
 
-class DCVCImageCodec(torch.nn.Module):
+
+class DCVCSandwichImageCodec(torch.nn.Module):
     def __init__(
-            self, 
-            device='cuda', 
-            force_zero_thres=0.12, 
-            qp=None, 
-            quant_mode = "global", 
-            sandwich: bool = False,
-            in_channels: int = 12,
-            unet_pre_base: int = 32,             # UNet width
-            unet_post_base: int = 32,
-            global_range = (-20.0, 20.0), 
-            packing_mode = "flatten",
-            mlp_layers = 2,
-            freeze_dcvc_enc=True, 
-            freeze_dcvc_dec=True,
-            eps=1e-3, 
-            convert_ycbcr=True
-        ):
+            self, cfg_dcvc, device, force_zero_thres=0.12
+    ):
         super().__init__()
-
+        self.device = device
         self.i_frame_net = DMCI()
-        i_state_dict = get_state_dict("checkpoints/cvpr2025_image.pth.tar")
+        i_state_dict = get_state_dict(cfg_dcvc.dcvc_ckpt)
         self.i_frame_net.load_state_dict(i_state_dict)
         self.i_frame_net.to(device)
         self.i_frame_net.eval()
         self.i_frame_net.update(force_zero_thres)
-        # self.i_frame_net.half()
+        self.i_frame_net.half()  # Convert to half precision
+        self.cfg_dcvc = cfg_dcvc
 
-        if freeze_dcvc_enc:
+        if cfg_dcvc.freeze_dcvc:
             freeze_iframenet_enc(self.i_frame_net)
-        if freeze_dcvc_dec:
             freeze_iframenet_dec(self.i_frame_net)
-        self.freeze_dcvc_enc = freeze_dcvc_enc
-        self.freeze_dcvc_dec = freeze_dcvc_dec
 
-        self.sandwich = sandwich
-        if self.sandwich:
-            # encoder: C -> 3, same spatial size
-            self.pre_processor = SmallUNet(in_ch=in_channels, out_ch=3, base=unet_pre_base)
-            self.mlp_pre   = create_mlp(in_channels, 3, mlp_layers)
-            self.bound_to_01    = BoundedProjector(3, eps=eps)
-            # decoder: 3 -> C, same spatial size
-            self.post_processor = SmallUNet(in_ch=3, out_ch=in_channels, base=unet_post_base)
-            self.mlp_post   = create_mlp(3, in_channels, mlp_layers)
-            self.convert_ycbcr = convert_ycbcr
-        else:
-            self.pack_fn   = pack_planes_to_rgb
-            self.unpack_fn = unpack_rgb_to_planes
-            self.packing_mode = packing_mode
+        self.use_sandwich = cfg_dcvc.use_sandwich
 
-        self.qp = qp
-        self.device = device
-        self.quant_mode = quant_mode
-        self.global_range = global_range
-        self.in_channels = in_channels
+
+        in_channels = cfg_dcvc.in_channels
+        unet_pre_base = cfg_dcvc.unet_pre_base
+        unet_post_base = cfg_dcvc.unet_post_base
+        eps = cfg_dcvc.eps
+        mlp_layers = cfg_dcvc.mlp_layers
+        convert_ycbcr = cfg_dcvc.convert_ycbcr
+        packing_mode = cfg_dcvc.packing_mode
+        # encoder: C -> 3, same spatial size
+        self.pre_processor = SmallUNet(in_ch=in_channels, out_ch=3, base=unet_pre_base)
+        self.mlp_pre   = create_mlp(in_channels, 3, mlp_layers)
+        self.bound_to_01    = BoundedProjector(3, eps=eps)
+        # decoder: 3 -> C, same spatial size
+        self.post_processor = SmallUNet(in_ch=3, out_ch=in_channels, base=unet_post_base)
+        self.mlp_post   = create_mlp(3, in_channels, mlp_layers)
+        self.convert_ycbcr = convert_ycbcr
+
+        self.qp = cfg_dcvc.dcvc_qp
+        self.quant_mode = cfg_dcvc.quant_mode
+        self.global_range = cfg_dcvc.global_range
         self.align = DCVC_ALIGN
 
     def forward(self, frame: torch.Tensor):
@@ -248,69 +325,38 @@ class DCVCImageCodec(torch.nn.Module):
             x = x.unsqueeze(0)   # [1,C,H,W]
         assert x.shape[1] == self.in_channels, f"expected C={self.in_channels}, got {x.shape[1]}"
 
-        # # Normalize *before* encoder so UNets see a bounded domain
-        # x01, c_min, scale = _normalize_planes(x, mode=self.quant_mode, global_range=self.global_range)
+        # ------------------- Learnable encoder --> 3ch ------------------
+        y3 = self.mlp_pre(x) + self.pre_processor(x)                       # [1,3,H,W] # value in range [0,1]
 
-        if self.sandwich:
-            # ------------------- Learnable encoder --> 3ch ------------------
-            y3 = self.mlp_pre(x) + self.pre_processor(x)                       # [1,3,H,W] # value in range [0,1]
+        # y01, c_min, scale = _normalize_planes(y3, mode=self.quant_mode, global_range=self.global_range)
+        # Use differentialbe clamping to [0,1] instead of normalization
+        y01 = self.bound_to_01(y3) 
 
-            # y01, c_min, scale = _normalize_planes(y3, mode=self.quant_mode, global_range=self.global_range)
-            # Use differentialbe clamping to [0,1] instead of normalization
-            y01 = self.bound_to_01(y3) 
+        # Pad to codec alignment
+        y_pad, orig_hw = _pad_to_align(y01, align=self.align)     # [1,3,H2p,W2p]
+        # y_pad = y_pad.to(device=self.device, dtype=torch.float16)
+        y_pad = y_pad.to(device=self.device, dtype=torch.float32)
 
-            # Pad to codec alignment
-            y_pad, orig_hw = _pad_to_align(y01, align=self.align)     # [1,3,H2p,W2p]
-            # y_pad = y_pad.to(device=self.device, dtype=torch.float16)
-            y_pad = y_pad.to(device=self.device, dtype=torch.float32)
+        # ------------------- DCVC I-frame (frozen) ----------------------
+    
+        out = dcvc_image_codec_forward(
+            y_pad, self.qp, self.i_frame_net, device=self.device, convert_ycbcr=self.convert_ycbcr
+        )
+        x_hat = out["x_hat"]
+        bpp   = out["bpp"]
+            # x_hat_cropped = _crop_from_align(x_hat, orig_hw).to(torch.float32)  # [1,3,H,W]
 
-            # ------------------- DCVC I-frame (frozen) ----------------------
-        
-            out = dcvc_image_codec_forward(
-                y_pad, self.qp, self.i_frame_net, device=self.device, convert_ycbcr=self.convert_ycbcr
-            )
-            x_hat = out["x_hat"]
-            bpp   = out["bpp"]
-                # x_hat_cropped = _crop_from_align(x_hat, orig_hw).to(torch.float32)  # [1,3,H,W]
+        # rec01 = (x_hat01 * scale + c_min).to(dtype=dtype_in)
+        # print(f"x_hat shape: {x_hat.shape}, y_pad shape: {y_pad.shape}")
+        diff = F.mse_loss(x_hat, y_pad.to(torch.float32))
+        plane_psnr =  utils.mse2psnr(diff.detach())
 
-            # rec01 = (x_hat01 * scale + c_min).to(dtype=dtype_in)
-            # print(f"x_hat shape: {x_hat.shape}, y_pad shape: {y_pad.shape}")
-            diff = F.mse_loss(x_hat, y_pad.to(torch.float32))
-            plane_psnr =  utils.mse2psnr(diff.detach())
-
-            # ------------------- Learnable decoder -> C ---------------------
-            x_hat_cropped = _crop_from_align(x_hat, orig_hw).to(torch.float32)
-            recon = self.mlp_post(x_hat_cropped) + self.post_processor(x_hat_cropped)    
-            # print(f"recon shape: {recon.shape}")               # [1,C,H,W]
-
-        else:
-            # ------------------- Fallback: pack/unpack path -----------------
-            # pack to 3ch canvas (mosaic/flatten), pad, DCVC, unpack
-            x01, c_min, scale = _normalize_planes(x, mode=self.quant_mode, global_range=self.global_range)
-            y_pad, orig_size = self.pack_fn(x01, mode=self.packing_mode)
-            H2p, W2p = y_pad.shape[-2:]
-            # y_pad = y_pad.to(device=self.device, dtype=torch.float16)
-            y_pad = y_pad.to(device=self.device, dtype=torch.float32)
-
-
-            result = dcvc_image_codec_forward(
-                y_pad, self.qp, self.i_frame_net, device=self.device
-            )
-            x_hat = result['x_hat'][..., :H2p, :W2p].to(torch.float32)
-            bpp = result['bpp']
-
-
-            diff = F.mse_loss(x_hat, y_pad).to(torch.float32)
-            plane_psnr =  utils.mse2psnr(diff.detach())
-
-            rec01 = self.unpack_fn(x_hat, x01.shape[1], orig_size, mode=self.packing_mode)
-            recon = (rec01 * scale + c_min).to(torch.float32)
+        # ------------------- Learnable decoder -> C ---------------------
+        x_hat_cropped = _crop_from_align(x_hat, orig_hw).to(torch.float32)
+        recon = self.mlp_post(x_hat_cropped) + self.post_processor(x_hat_cropped)    
+        # print(f"recon shape: {recon.shape}")               # [1,C,H,W]
 
         return recon, bpp, plane_psnr
-
-
-    # def infer(self)
-
 
 
 def pack_planes_to_rgb(x, align=DCVC_ALIGN, mode: str = "flatten"):
@@ -502,18 +548,12 @@ def _decoder_modules(dmci):
         ],
     )
 
-# # Optional: entropy/bit estimator pieces (often learnable); treat as "decoder"
-# def _optional_entropy_modules(dmci):
-#     mods = []
-#     for name in ("bit_estimator_z", "gaussian_encoder", "entropy_coder"):
-#         if hasattr(dmci, name):
-#             m = getattr(dmci, name)
-#             # some "coders" don’t have params; toggling is harmless
-#             if isinstance(m, torch.nn.Module):
-#                 mods.append(m)
-#     return mods
-
 # --- public helpers you can call ---------------------------------------------
+def freeze_iframenet_all(dmci):
+    for p in dmci.parameters():
+        p.requires_grad_(False)
+    dmci.eval()
+
 def freeze_iframenet_enc(dmci: "DMCI"):
     """Freeze DCVC encoder side, enable decoder side for finetuning."""
     enc = _encoder_modules(dmci)

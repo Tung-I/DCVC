@@ -1,7 +1,8 @@
 _base_ = '../default.py'
 expname = 'flame_steak_image'
-ckptname = None
-wandbprojectname = 'image_dcvc_flame_steak'
+# ckptname = None
+ckptname = 'flame_steak_image'
+wandbprojectname = 'canerf_flame_steak_image'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/out_triplane'
 
 data = dict(
@@ -30,12 +31,12 @@ fine_model_and_render = dict(
 _k = 1
 fine_train = dict(
     ray_sampler='flatten',
-	N_iters=40000,
+	N_iters=32000,
 	N_rand=5000,   
 	tv_every=1,                   # count total variation loss every tv_every step
     tv_after=100,                   # count total variation loss from tv_from step
-    tv_before=35000,                  # count total variation before the given number of iterations
-    tv_dense_before=35000,            # count total variation densely before the given number of iterations
+    tv_before=25000,                  # count total variation before the given number of iterations
+    tv_dense_before=25000,            # count total variation densely before the given number of iterations
     weight_tv_density=1e-5,        # weight of total variation loss of density voxel grid
 	weight_tv_k0=1e-4,
 	weight_l1_loss=0.01,

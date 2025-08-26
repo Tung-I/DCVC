@@ -27,9 +27,12 @@ from torch_efficient_distloss import flatten_eff_distloss
 
 """
 Usage:
-    python train_triplane.py --config TeTriRF/configs/N3D/flame_steak.py --frame_ids 0 1 2 3 4 5 6 7 8 9 --training_mode 1
+    python train_triplane.py --config TeTriRF/configs/N3D/flame_steak_0s_1s_20fps --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 --training_mode 1
+    python train_triplane.py --config TeTriRF/configs/N3D/flame_steak_0s_1s_15fps.py --frame_ids 0 2 4 6 8 10 12 14 16 18 20 22 24 26 28 --training_mode 1
     python train_triplane.py --config TeTriRF/configs/N3D/flame_steak_image.py --frame_ids 0  --training_mode 1
 """
+
+WANDB = True
 
 # ------------------------------------------------------------------------------
 # 2. Argument & config handling
@@ -50,7 +53,6 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--eval_ssim", action='store_true')
     p.add_argument("--eval_lpips_alex", action='store_true')
     p.add_argument("--eval_lpips_vgg", action='store_true')
-    p.add_argument("--resume", action='store_true')
     return p
 
 
@@ -105,7 +107,8 @@ class Trainer:
     def __post_init__(self):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self._build_model_and_opt()
-        wandb.watch(self.model, log="all", log_freq=self.args.i_print)
+        if WANDB:
+            wandb.watch(self.model, log="all", log_freq=self.args.i_print)
         self._build_rays()
 
     def _build_model_and_opt(self):
@@ -114,9 +117,10 @@ class Trainer:
         ids      = torch.unique(self.data['frame_ids']).cpu().tolist()
 
         self.model = dvgo_video.DirectVoxGO_Video(ids, xyz_min, xyz_max, self.cfg).to(self.device)
-        if args.resume:
+        if self.cfg.ckptname:
             ret = self.model.load_checkpoints()
-            self.model.set_fixedframe(ret)         # identical to original side-effect
+            # self.model.dvgos['0'].reset_occupancy_cache()
+            # self.model.set_fixedframe(ret)         # identical to original side-effect
         if (not self.cfg.fine_model_and_render.dynamic_rgbnet
             and self.args.training_mode > 0):
             self.cfg.fine_train.lrate_rgbnet = 0
@@ -270,12 +274,14 @@ class Trainer:
                 psnr = np.mean(self._psnr_buffer); self._psnr_buffer.clear()
                 tqdm.write(f'[step {step:6d}] loss {loss.item():.4e}  psnr {psnr:5.2f}  '
                            f'elapsed {dt/3600:02.0f}:{dt/60%60:02.0f}:{dt%60:02.0f}')
-                
-                wandb.log({
-                    "train/psnr": float(psnr),
-                    "train/loss": float(loss.item()),
-                    "time/elapsed_s": dt,
-                }, step=step)
+                if WANDB:
+                    wandb.log({
+                        "train/psnr": float(psnr),
+                        "train/loss": float(loss.item()),
+                        "time/elapsed_s": dt,
+                    }, step=step)
+
+                # raise Exception("Stop here")
 
             if step % cfg_t.save_every == 0 and step >= cfg_t.save_after:
                 self.model.save_checkpoints()
@@ -289,12 +295,12 @@ if __name__ == '__main__':
     cfg  = Config.fromfile(args.config)
     cfg.data.frame_ids = args.frame_ids
 
-
-    wandb.init(
-      project=cfg.wandbprojectname,
-      name=cfg.expname,
-      config=vars(args)
-    )
+    if WANDB:
+        wandb.init(
+          project=cfg.wandbprojectname,
+          name=cfg.expname,
+          config=vars(args)
+        )
 
     if torch.cuda.is_available():
         torch.set_default_tensor_type('torch.cuda.FloatTensor')

@@ -1,5 +1,8 @@
 _base_ = '../default.py'
 expname = 'flame_steak'
+# ckptname = None
+ckptname = None
+wandbprojectname = 'canerf_flame_steak_video'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/out_triplane'
 
 data = dict(
@@ -28,7 +31,7 @@ fine_model_and_render = dict(
 _k = 1
 fine_train = dict(
     ray_sampler='flatten',
-	N_iters=32000,
+	N_iters=40000,
 	N_rand=5000,   
 	tv_every=1,                   # count total variation loss every tv_every step
     tv_after=100,                   # count total variation loss from tv_from step
@@ -46,7 +49,7 @@ fine_train = dict(
     lrate_k0=1e-1,                # lr of color/feature voxel grid
     lrate_rgbnet=1e-3,            # lr of the mlp to preduct view-dependent color
     save_every = 2000,          # save every save_every steps
-    save_after = 20000,          # save after save_after steps
+    save_after = 10000,          # save after save_after steps
 )
 
 coarse_train = dict(

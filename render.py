@@ -19,6 +19,11 @@ from torch_efficient_distloss import flatten_eff_distloss
 import pandas as pd
 import time
 
+"""
+Usage:
+    python render.py --config  TeTriRF/configs/N3D/flame_steak_image.py --frame_ids 0 --render_test --startframe 0 --numframe 1 --qp 10
+"""
+
 def config_parser():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument('--config', required=True,
@@ -219,21 +224,6 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     return rgbs, depths, bgmaps, res_psnr
 
 if __name__=='__main__':
-    """
-    Usage:
-        python render.py --config  TeTriRF/configs/N3D/flame_steak.py \
-            --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19\
-                 --render_test --startframe 0 --numframe 20 
-
-        python render.py --config  TeTriRF/configs/N3D/coffee_martini.py \
-            --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19\
-                 --render_test --startframe 0 --numframe 20  --reald
-
-        python render.py --config  TeTriRF/configs/N3D/flame_steak_image.py \
-            --frame_ids 0 --render_test --startframe 0 --reald
-
-        python render.py --config  TeTriRF/configs/N3D/flame_steak_image.py --frame_ids 0 --render_test --startframe 0 --qp 40 --numframe 1
-    """
     parser = config_parser()
     args = parser.parse_args()
     cfg = Config.fromfile(args.config)
@@ -282,13 +272,12 @@ if __name__=='__main__':
             elif args.aware:
                 ckpt_path = os.path.join(cfg.basedir, cfg.expname, f"compressed_{qp}_fine_last_{frame_id}.tar")
                 testsavedir = os.path.join(cfg.basedir, cfg.expname, f"compressed_{qp}_fine_last_{frame_id}", 'render_test')
-               
             else:
                 testsavedir = os.path.join(cfg.basedir, cfg.expname, 
-                                            f"triplanes_{S:02d}_{N:02d}_qp{qp}_{strategy}_{args.qmode}",
+                                            f"planeimg_{S:02d}_{N:02d}_{strategy}_{args.qmode}_qp{qp}",
                                             f'render_test')
                 ckpt_path = os.path.join(cfg.basedir, cfg.expname, 
-                                            f"triplanes_{S:02d}_{N:02d}_qp{qp}_{strategy}_{args.qmode}", 
+                                            f"planeimg_{S:02d}_{N:02d}_{strategy}_{args.qmode}_qp{qp}", 
                                             f"fine_last_{frame_id}.tar")
                
 

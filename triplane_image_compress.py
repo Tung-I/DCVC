@@ -123,7 +123,7 @@ def compress_one_image(src_png: str, dst_png: str, is_color: bool, qp: int):
     
     return encoded_bits
 
-def process_tiling_or_flatfour(dec_root: str, plane_names: List[str], fid: int, qp: int, color: bool):
+def process_tiling_or_flatfour(dec_root: str, out_root: str, plane_names: List[str], fid: int, qp: int, color: bool):
     """
     tiling  : per-plane mono image
     flatfour: per-plane color image
@@ -132,8 +132,8 @@ def process_tiling_or_flatfour(dec_root: str, plane_names: List[str], fid: int, 
     for plane in plane_names:
         src_dir = os.path.join(dec_root, plane)
         src_img = os.path.join(src_dir, f"im{fid + 1:05d}.png")
-        dst_dir = os.path.join(dec_root, f"{plane}_qp{qp}")
-        dst_img = os.path.join(dst_dir, f"im{fid + 1:05d}_decoded.png")
+        dst_dir = os.path.join(out_root, f"{plane}")
+        dst_img = os.path.join(dst_dir, f"im{fid + 1:05d}.png")
         encoded_bits = compress_one_image(src_img, dst_img, is_color=color, qp=qp)
 
         total_bits += encoded_bits
@@ -167,13 +167,13 @@ def process_grouped_like(dec_root: str, plane_names: List[str], fid: int, qp: in
             dst_img = os.path.join(dst_dir, f"im{fid + 1:05d}_decoded.png")
             compress_one_image(src_img, dst_img, is_color=True, qp=qp)
 
-def process_density(dec_root: str, fid: int, qp: int):
+def process_density(dec_root: str, out_root: str, fid: int, qp: int):
     dens_src_dir = os.path.join(dec_root, "density")
     if not os.path.isdir(dens_src_dir):
         return  # allow absence
     src_img = os.path.join(dens_src_dir, f"im{fid + 1:05d}.png")
-    dst_dir = os.path.join(dec_root, f"density_qp{qp}")
-    dst_img = os.path.join(dst_dir, f"im{fid + 1:05d}_decoded.png")
+    dst_dir = os.path.join(out_root, f"density")
+    dst_img = os.path.join(dst_dir, f"im{fid + 1:05d}.png")
     encoded_bits = compress_one_image(src_img, dst_img, is_color=False, qp=qp)
 
     return encoded_bits
@@ -198,7 +198,7 @@ def main():
     S = args.startframe
     N = args.startframe + args.numframe - 1
     dec_root = os.path.join(args.logdir, f"planeimg_{S:02d}_{N:02d}_{args.strategy}_{args.qmode}")
-    out_root = os.path.join(args.logdir, f"triplanes_{S:02d}_{N:02d}_qp{args.qp}_{args.strategy}_{args.qmode}")
+    out_root = os.path.join(args.logdir, f"planeimg_{S:02d}_{N:02d}_{args.strategy}_{args.qmode}_qp{args.qp}")
     os.makedirs(out_root, exist_ok=True)
     if not os.path.isdir(dec_root):
         raise FileNotFoundError(f"Packed planes not found: {dec_root}")
@@ -210,7 +210,7 @@ def main():
     grand_total_bits = 0
     for fid in range(args.startframe, args.startframe + args.numframe):
         if args.strategy == "tiling":
-            grand_total_bits += process_tiling_or_flatfour(dec_root, plane_names, fid, args.qp, color=False)
+            grand_total_bits += process_tiling_or_flatfour(dec_root, out_root, plane_names, fid, args.qp, color=False)
         elif args.strategy == "flatfour":
             process_tiling_or_flatfour(dec_root, plane_names, fid, args.qp, color=True)
         elif args.strategy == "separate":
@@ -221,7 +221,7 @@ def main():
             raise ValueError("Unknown strategy")
 
         # density is written by your packer regardless of strategy; compress it too
-        grand_total_bits += process_density(dec_root, fid, args.qp)
+        grand_total_bits += process_density(dec_root, out_root, fid, args.qp)
 
     # Write a single integer to encoded_bits.txt (total bits across all JPEGs)
     bits_path = os.path.join(out_root, "encoded_bits.txt")

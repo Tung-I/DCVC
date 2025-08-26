@@ -17,80 +17,191 @@ from .masked_adam import MaskedAdam
 mse2psnr = lambda x : -10. * torch.log10(x)
 to8b = lambda x : (255*np.clip(x,0,1)).astype(np.uint8)
 
-def create_optimizer_or_freeze_model_dcvc_triplane(model, cfg_train, global_step, codec_params=None, sandwich_params=None):
+
+def debug_print_param_status(model: torch.nn.Module, optimizer: torch.optim.Optimizer, *,
+                             max_names_per_group: int = 30, prefix_levels: int = 4) -> None:
     """
-    To-do: what is skip_zero_grad
+    Prints which parameters are trainable, frozen, or orphaned (requires_grad=True but not in any opt group).
+    Also shows each optimizer group's LR and a compact list of param names in it.
     """
-    decay_steps = cfg_train.lrate_decay * 1000
-    decay_factor = 0.1 ** (global_step/decay_steps)
+    # 1) Build name ↔ param maps
+    name_to_param = dict(model.named_parameters())
+    id_to_name = {id(p): n for n, p in name_to_param.items()}
 
-    param_group = []
-    for k in cfg_train.keys():
-        if not k.startswith('lrate_'):
-            continue
-        k = k[len('lrate_'):]
+    # 2) Collect optimizer membership
+    group_infos = []
+    opt_param_ids = set()
+    for gi, g in enumerate(optimizer.param_groups):
+        plist = list(g['params'])
+        opt_param_ids.update(id(p) for p in plist)
+        group_infos.append({
+            "idx": gi,
+            "lr": g.get("lr", None),
+            "skip_zero_grad": g.get("skip_zero_grad", False),
+            "names": [id_to_name.get(id(p), f"<unnamed:{id(p)}>") for p in plist],
+        })
 
-        if k=='decay':
-            continue
-        
-        if k=='dcvc':
-            lr = getattr(cfg_train, f'lrate_{k}') * decay_factor
-            if len(codec_params):
-                param_group.append({'params': codec_params, 'lr': lr, 'skip_zero_grad': (k in cfg_train.skip_zero_grad_fields)})
-
-        if k=='sandwich':
-            lr = getattr(cfg_train, f'lrate_{k}') * decay_factor
-            if len(sandwich_params):
-                param_group.append({'params': sandwich_params, 'lr': lr, 'skip_zero_grad': (k in cfg_train.skip_zero_grad_fields)})
-
-        if k=='rgbnet':
-            param = getattr(model, k)
-            if param is None:
-                print(f'create_optimizer_or_freeze_model: param {k} not exist')
-                continue
-
-            lr = getattr(cfg_train, f'lrate_{k}') * decay_factor
-            if lr > 0:
-                print(f'create_optimizer_or_freeze_model: param {k} lr {lr}')
-                if isinstance(param, nn.Module):
-                    param = param.parameters()
-                    param_group.append({'params': param, 'lr': lr, 'skip_zero_grad': (k in cfg_train.skip_zero_grad_fields)})
-
+    # 3) Partition params
+    trainable = []
+    frozen = []
+    orphan = []  # requires_grad=True but not in any optimizer group
+    for name, p in name_to_param.items():
+        if p.requires_grad:
+            if id(p) in opt_param_ids:
+                trainable.append(name)
             else:
-                print(f'create_optimizer_or_freeze_model: param {k} freeze')
-                param.requires_grad = False
+                orphan.append(name)
         else:
-            for frameid in model.dvgos.keys():
+            frozen.append(name)
 
-                if not hasattr(model.dvgos[frameid], k):
-                    print(f'create_optimizer_or_freeze_model: param {k} not exist')
-                    continue
+    # 4) Pretty helpers
+    def shorten(n: str) -> str:
+        # keep only first few dotted components for readability
+        parts = n.split(".")
+        if len(parts) <= prefix_levels: return n
+        return ".".join(parts[:prefix_levels]) + ".../" + parts[-1]
 
-                param = getattr(model.dvgos[frameid], k)
+    def sample(lst, k):
+        return lst if len(lst) <= k else lst[:k] + [f"... (+{len(lst)-k} more)"]
 
-                if int(frameid) in model.fixed_frame:
-                    print(f'create_optimizer_or_freeze_model: param {k} freeze [previous frames]')
-                    param.requires_grad = False
-                    continue
+    # 5) Print summary
+    total = len(name_to_param)
+    print("\n========== Parameter Freeze/Train Summary ==========")
+    print(f"Total params: {total}")
+    print(f"  - trainable in optimizer: {len(trainable)}")
+    print(f"  - frozen (requires_grad=False): {len(frozen)}")
+    print(f"  - ORPHAN (requires_grad=True but NOT in optimizer): {len(orphan)}")
+    if orphan:
+        print(">>> WARNING: The following params require grad but are not in any optimizer group:")
+        for n in sample(orphan, 50):
+            print("    •", n)
+
+    for n in sample(trainable, 30):
+        print("    •", n)
+
+    # # 6) Show some frozen names (useful sanity check)
+    # if frozen:
+    #     print("\nFrozen params (sample):")
+    #     for n in sample([shorten(n) for n in frozen], 30):
+    #         print("    -", n)
+
+    # # 7) Per-group breakdown
+    # print("\nOptimizer groups:")
+    # for info in group_infos:
+    #     names = info["names"]
+    #     print(f"  [group {info['idx']}] lr={info['lr']}  skip_zero_grad={info['skip_zero_grad']}  count={len(names)}")
+    #     for n in sample([shorten(n) for n in names], max_names_per_group):
+    #         print("     •", n)
+    print("====================================================\n")
 
 
-                lr = getattr(cfg_train, f'lrate_{k}') * decay_factor
-                if lr > 0:
-                    print(f'create_optimizer_or_freeze_model: param {k} lr {lr}')
-                    if isinstance(param, nn.Module):
-                        param = param.parameters()
-                        param_group.append({'params': param, 'lr': lr, 'skip_zero_grad': (k in cfg_train.skip_zero_grad_fields)})
+def create_optimizer_or_freeze_model_dcvc_triplane(model, cfg_train, global_step,
+                                                   codec_params=[], sandwich_params=None):
+    """
+    Build optimizer groups for TriPlane (density, k0) and rgbnet, while freezing DCVC.
+    Converts all parameter iterables to concrete lists to avoid generator exhaustion.
+    """
 
-                else:
-                    print(f'create_optimizer_or_freeze_model: param {k} freeze')
-                    param.requires_grad = False
+    def _as_list(x):
+        if x is None:
+            return []
+        if isinstance(x, torch.nn.Parameter):
+            return [x]
+        # nn.Module.parameters() returns a generator; coerce to list
+        if isinstance(x, torch.nn.Module):
+            return list(x.parameters())
+        # Fallback: if it looks like an iterable of params, materialize it
+        try:
+            return list(x)
+        except TypeError:
+            return []
 
-    for gi, g in enumerate(param_group):
-        for p in g['params']:
+    # learning-rate schedule
+    decay_steps  = getattr(cfg_train, 'lrate_decay', 20) * 1000
+    decay_factor = (0.1 ** (global_step / decay_steps)) if decay_steps > 0 else 1.0
+    def lr_of(name, default=0.0):
+        base = getattr(cfg_train, f'lrate_{name}', default)
+        return float(base) * decay_factor
+
+    skip_zero = set(getattr(cfg_train, 'skip_zero_grad_fields', []))
+    param_groups = []
+
+    # --- 0) DCVC: hard-freeze everything and DO NOT add to optimizer ---
+    if hasattr(model, 'codec'):
+        for p in model.codec.parameters():
+            p.requires_grad_(False)
+
+    # --- 1) RGBNet group ---
+    lr_rgb = lr_of('rgbnet', 0.0)
+    if hasattr(model, 'rgbnet') and isinstance(model.rgbnet, torch.nn.Module):
+        rgb_params = _as_list(model.rgbnet)
+        if lr_rgb > 0 and len(rgb_params):
+            param_groups.append({
+                'params': rgb_params, 'lr': lr_rgb,
+                'skip_zero_grad': ('rgbnet' in skip_zero)
+            })
+            # ensure trainable
+            for p in rgb_params: p.requires_grad_(True)
+        else:
+            for p in rgb_params: p.requires_grad_(False)
+
+    # --- 2) Per-frame TriPlane params (density, k0) ---
+    lr_den = lr_of('density', 0.0)
+    lr_k0  = lr_of('k0', 0.0)
+
+    for fid, dvgo in model.dvgos.items():
+        is_fixed = (int(fid) in getattr(model, 'fixed_frame', []))
+        # density
+        if hasattr(dvgo, 'density'):
+            p_den = _as_list(dvgo.density)
+            if not is_fixed and lr_den > 0 and len(p_den):
+                param_groups.append({
+                    'params': p_den, 'lr': lr_den,
+                    'skip_zero_grad': ('density' in skip_zero)
+                })
+                for p in p_den: p.requires_grad_(True)
+            else:
+                for p in p_den: p.requires_grad_(False)
+        # k0 (feature planes)
+        if hasattr(dvgo, 'k0'):
+            p_k0 = _as_list(dvgo.k0)
+            if not is_fixed and lr_k0 > 0 and len(p_k0):
+                param_groups.append({
+                    'params': p_k0, 'lr': lr_k0,
+                    'skip_zero_grad': ('k0' in skip_zero)
+                })
+                for p in p_k0: p.requires_grad_(True)
+            else:
+                for p in p_k0: p.requires_grad_(False)
+
+    # --- 3) (Optional) sandwich/DCVC head — only if you actually want them ---
+    # Keep these OFF by default given your goal
+    # If you later want them, ensure you pass pre-filtered lists (already requires_grad=True)
+    if sandwich_params:
+        lr_sw = lr_of('sandwich', 0.0)
+        if lr_sw > 0:
+            sw_list = _as_list(sandwich_params)
+            if len(sw_list):
+                param_groups.append({
+                    'params': sw_list, 'lr': lr_sw,
+                    'skip_zero_grad': ('sandwich' in skip_zero)
+                })
+                for p in sw_list: p.requires_grad_(True)
+
+    # Safety: check dtype while NOT consuming generators (everything is list now)
+    for gi, g in enumerate(param_groups):
+        plist = g['params']
+        if not isinstance(plist, (list, tuple)):
+            plist = list(plist)
+            g['params'] = plist
+        for p in plist:
             if p.dtype != torch.float32:
-                raise RuntimeError(f"Optimizer group {gi} contains {p.dtype} param {p.shape}; must be float32.")
-  
-    return MaskedAdam(param_group)
+                raise RuntimeError(
+                    f"Optimizer group {gi} contains {p.dtype} param {tuple(p.shape)}; must be float32."
+                )
+
+    return MaskedAdam(param_groups)
+
 
 def create_optimizer_or_freeze_model(model, cfg_train, global_step):
     decay_steps = cfg_train.lrate_decay * 1000
@@ -264,6 +375,15 @@ def rgb_ssim(img0, img1, max_val,
     ssim = np.mean(ssim_map)
     return ssim_map if return_map else ssim
 
+
+def mse2psnr_with_peak(mse: torch.Tensor, peak: float | torch.Tensor) -> torch.Tensor:
+    # Broadcast peak to mse if needed; clamp mse for safety
+    mse = mse.clamp_min(1e-12)
+    if isinstance(peak, torch.Tensor):
+        peak2 = (peak ** 2)
+        return 10.0 * torch.log10(peak2 / mse)
+    else:
+        return 10.0 * torch.log10((peak * peak) / mse)
 
 __LPIPS__ = {}
 def init_lpips(net_name, device):

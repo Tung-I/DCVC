@@ -116,6 +116,24 @@ coarse_model_and_render = dict(
     plane_scale = 3,
 )
 
+dcvc = dict(
+    ckpt_path = None,
+    unet_pre_base = None,             # UNet width
+    unet_post_base = None,
+    use_sandwich = None,  
+    convert_ycbcr=None,
+    freeze_dcvc=None,
+    dcvc_qp = None,
+    lambda_min = None,
+    lambda_max = None,
+    quant_mode = None,
+    global_range = None,
+    packing_mode = None,
+    mlp_layers = None,
+    in_channels = None,  # Number of input channels for the DCVC codec
+    use_amp = None
+)
+
 fine_model_and_render = deepcopy(coarse_model_and_render)
 fine_model_and_render.update(dict(
     num_voxels=160**3,

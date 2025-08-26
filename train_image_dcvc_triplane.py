@@ -22,17 +22,18 @@ from mmengine.config import Config
 import wandb
 import math
 
+from TeTriRF.lib.utils import debug_print_param_status
 from TeTriRF.lib import dvgo, dmpigo, dvgo_video, dcvc_dvgo_video, utils      # unchanged
 from TeTriRF.lib.load_data import load_data
 from torch_efficient_distloss import flatten_eff_distloss
-from TeTriRF.lib.plane_codec_dcvc import collect_trainable_iframe_params, collect_trainable_sandwich_params
+from TeTriRF.lib.dcvc_wrapper import collect_trainable_iframe_params, collect_trainable_sandwich_params
 
-
+WANDB=True
 """
 Usage:
     python train_image_dcvc_triplane.py --config TeTriRF/configs/N3D/flame_steak_image_dcvc.py --frame_ids 0 --training_mode 1 --resume
     python train_image_dcvc_triplane.py --config TeTriRF/configs/N3D/flame_steak_image_dcvc_sandwich.py --frame_ids 0  --resume
-    python train_image_dcvc_triplane.py --config TeTriRF/configs/N3D/flame_steak_image_dcvc_qp12.py --frame_ids 0 
+    python train_image_dcvc_triplane.py --config TeTriRF/configs/N3D/flame_steak_image_dcvc_qp48_resume.py --frame_ids 0 
 """
 
 # ------------------------------------------------------------------------------
@@ -45,7 +46,8 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=777)
     p.add_argument("--training_mode", type=int, default=1)
     # misc I/O
-    p.add_argument("--i_print", type=int, default=1000)
+    p.add_argument("--i_print", type=int, default=250)
+    p.add_argument("--i_log", type=int, default=1000)
     p.add_argument("--render_only", action='store_true')
     p.add_argument("--no_reload", action='store_true')
     p.add_argument("--no_reload_optimizer", action='store_true')
@@ -105,11 +107,24 @@ class Trainer:
     def __post_init__(self):
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self._build_model_and_opt()
-        self._build_rays()
-        # self.lambda_bpp = self.qp_to_lambda(self.cfg.fine_train.dcvc_qp)
-        self.lambda_bpp = cfg.fine_train.lambda_bpp
 
-        wandb.watch(self.model, log="all", log_freq=self.args.i_print)
+        # debug_print_param_status(self.model, self.optimizer)
+        # raise Exception
+    
+        self._build_rays()
+        self.lambda_bpp = self.qp_to_lambda(self.cfg.dcvc.dcvc_qp)
+        """
+        # for _qp in [0, 12, 24, 48]:
+        #     print(f"lambda_bpp[{_qp}] = {self.qp_to_lambda(_qp)}")
+        # raise Exception('')
+        lambda_bpp[0] = 1.0
+        lambda_bpp[12] = 3.544807152675064
+        lambda_bpp[24] = 12.565657749656294
+        lambda_bpp[48] = 157.8957546814973
+        """
+
+        if WANDB:
+            wandb.watch(self.model, log="all", log_freq=self.args.i_log)
 
     def _build_model_and_opt(self):
         xyz_min = torch.tensor(self.cfg.data.xyz_min)
@@ -117,21 +132,19 @@ class Trainer:
         ids      = torch.unique(self.data['frame_ids']).cpu().tolist()
        
         self.model = dcvc_dvgo_video.DCVC_DVGO_Video(
-            ids, xyz_min, xyz_max, self.cfg, 
-            dcvc_qp = self.cfg.fine_train.dcvc_qp, freeze_dcvc_enc=self.cfg.fine_model_and_render.freeze_dcvc_enc, 
-            freeze_dcvc_dec=self.cfg.fine_model_and_render.freeze_dcvc_dec, convert_ycbcr=self.cfg.fine_model_and_render.convert_ycbcr
+            ids, xyz_min, xyz_max, self.cfg
         ).to(self.device)
-        
 
-        if args.resume:
+        if self.cfg.ckptname:
             _ = self.model.load_checkpoints()
 
         codecs_params = collect_trainable_iframe_params(self.model.codec.i_frame_net)
 
-        if self.cfg.fine_model_and_render.sandwich:
-            sandwich_params = collect_trainable_sandwich_params(self.model.codec)
-        else:
-            sandwich_params = None
+        # if self.cfg.fine_model_and_render.sandwich:
+        #     sandwich_params = collect_trainable_sandwich_params(self.model.codec)
+        # else:
+        #     sandwich_params = None
+        sandwich_params = None
             
         self.optimizer = utils.create_optimizer_or_freeze_model_dcvc_triplane(
                 self.model, self.cfg.fine_train, global_step=0, codec_params=codecs_params, sandwich_params=sandwich_params
@@ -201,7 +214,7 @@ class Trainer:
             # self.optimizer = utils.create_optimizer_or_freeze_model_dvgovideo(
             #     self.model, cfg_t, global_step=0)
             self.optimizer = utils.create_optimizer_or_freeze_model_dcvc_triplane(
-                self.model, cfg_t, global_step=0
+                self.model, self.cfg.fine_train, global_step=step
             )
             print(f'Progressive growing to {vox} voxels at step {step}.')
             for fid in self.model.dvgos.keys():
@@ -210,10 +223,12 @@ class Trainer:
             torch.cuda.empty_cache()
 
     def qp_to_lambda(self, qp):
-        cfg_t = self.cfg.fine_train
-        lambda_val = math.log(cfg_t.lambda_min) + qp / (64 - 1) * (
-                math.log(cfg_t.lambda_max) - math.log(cfg_t.lambda_min))
+        lambda_val = math.log(self.cfg.dcvc.lambda_min) + qp / (64 - 1) * (
+                math.log(self.cfg.dcvc.lambda_max) - math.log(self.cfg.dcvc.lambda_min))
         lambda_val = math.pow(math.e, lambda_val)
+
+        # lambda_val = 0.
+
         return lambda_val
 
     # -------------------------------------------------------------------------
@@ -233,15 +248,8 @@ class Trainer:
             to_dev = lambda x: x.to(self.device)
             target, ro, rd, vd = map(to_dev, (target, ro, rd, vd))
         
-        # Encode and decode Tri-Planes
-        plane_psnr_dict, bpp_dict = self.model.run_codec_once()
-        total_bpp = 0
-        for k in bpp_dict.keys():
-            total_bpp += bpp_dict[k]
-
-
-        # Compute rendering loss
-        render = self.model(ro, rd, vd, frame_ids=fid_b, global_step=step,
+        # Encode and decode Tri-Planes, compute rendering loss
+        render, avg_bpp, psnr_by_axis = self.model(ro, rd, vd, frame_ids=fid_b, global_step=step,
                             mode='feat',
                             near=self.data['near'], far=self.data['far'],
                             bg=1 if self.cfg.data.white_bkgd else 0,
@@ -250,42 +258,43 @@ class Trainer:
                             inverse_y=self.cfg.data.inverse_y,
                             flip_x=self.cfg.data.flip_x, flip_y=self.cfg.data.flip_y)
 
-        loss = self._compute_loss(render, target, step, fid_b, total_bpp)
+        rec_loss, bpp_loss = self._compute_loss(render, target, step, fid_b, avg_bpp)
         self.optimizer.zero_grad(set_to_none=True)
+        loss = rec_loss + bpp_loss
         loss.backward()
 
-        # Total-variation regularization on voxel grids
-        cfg_train = self.cfg.fine_train
-        if step<cfg_train.tv_before and step>cfg_train.tv_after and step%cfg_train.tv_every==0:
-            if cfg_train.weight_tv_density>0:
-                self.model.density_total_variation_add_grad(
-                    cfg_train.weight_tv_density/len(ro), step<cfg_train.tv_dense_before, fid_b)
-            if cfg_train.weight_tv_k0>0:
-                self.model.k0_total_variation_add_grad(
-                    cfg_train.weight_tv_k0/len(ro), step<cfg_train.tv_dense_before, fid_b)
+        # # Total-variation regularization on voxel grids
+        # cfg_train = self.cfg.fine_train
+        # if step<cfg_train.tv_before and step>cfg_train.tv_after and step%cfg_train.tv_every==0:
+        #     if cfg_train.weight_tv_density>0:
+        #         self.model.density_total_variation_add_grad(
+        #             cfg_train.weight_tv_density/len(ro), step<cfg_train.tv_dense_before, fid_b)
+        #     if cfg_train.weight_tv_k0>0:
+        #         self.model.k0_total_variation_add_grad(
+        #             cfg_train.weight_tv_k0/len(ro), step<cfg_train.tv_dense_before, fid_b)
 
         self.optimizer.step()
-        return loss, plane_psnr_dict, total_bpp
+        return loss, psnr_by_axis, avg_bpp, rec_loss, bpp_loss
 
-    def _compute_loss(self, render, target, step, fid_batch, total_bpp):
+    def _compute_loss(self, render, target, step, fid_batch, avg_bpp):
         cfg_t = self.cfg.fine_train
-        loss = cfg_t.weight_main * F.mse_loss(render['rgb_marched'], target)
-        psnr = utils.mse2psnr(loss.detach()); self._psnr_buffer.append(psnr.item())
+        rec_loss = cfg_t.weight_main * F.mse_loss(render['rgb_marched'], target)
+        psnr = utils.mse2psnr(rec_loss.detach()); self._psnr_buffer.append(psnr.item())
 
         if cfg_t.weight_entropy_last > 0:
             p = render['alphainv_last'].clamp(1e-6,1-1e-6)
-            loss += cfg_t.weight_entropy_last * (-(p*torch.log(p)+(1-p)*torch.log(1-p))).mean()
+            rec_loss += cfg_t.weight_entropy_last * (-(p*torch.log(p)+(1-p)*torch.log(1-p))).mean()
 
         if cfg_t.weight_distortion > 0:
-            loss += cfg_t.weight_distortion * flatten_eff_distloss(
+            rec_loss += cfg_t.weight_distortion * flatten_eff_distloss(
                 render['weights'], render['s'], 1/render['n_max'], render['ray_id'])
 
-        loss += self.cfg.fine_train.weight_l1_loss * self.model.compute_k0_l1_loss(fid_batch)
+        # loss += self.cfg.fine_train.weight_l1_loss * self.model.compute_k0_l1_loss(fid_batch)
 
 
-        loss += self.lambda_bpp * total_bpp
+        bpp_loss = self.lambda_bpp * avg_bpp
 
-        return loss
+        return rec_loss, bpp_loss
 
     # -------------------------------------------------------------------------
     # Training loop
@@ -297,7 +306,7 @@ class Trainer:
             if (step+500) % 1000 == 0:
                 self.model.update_occupancy_cache()
             self._progressive_grow(step)
-            loss, plane_psnr_dict, total_bpp  = self._train_step(step)
+            loss, plane_psnr_dict, avg_bpp, rec_loss, bpp_loss  = self._train_step(step)
 
             # LR decay
             decay = 0.1 ** (1 / (cfg_t.lrate_decay*1000)) # cfg_t.lrate_decay = 20
@@ -306,22 +315,27 @@ class Trainer:
             if step % self.args.i_print == 0 or step == 1:
                 dt   = time.time() - self._tic
                 psnr = np.mean(self._psnr_buffer); self._psnr_buffer.clear()
-                tqdm.write(f'[step {step:6d}] loss {loss.item():.4e}  psnr {psnr:5.2f}  '
+                tqdm.write(f'[step {step:6d}] loss {loss.item():.4e}  psnr {psnr:5.2f}_{plane_psnr_dict['xy']:5.2f}'
                            f'elapsed {dt/3600:02.0f}:{dt/60%60:02.0f}:{dt%60:02.0f}')
+                
+                # raise Exception("Stop here")
 
-            if step % self.args.i_print == 0:
+            if step % self.args.i_log == 0 and WANDB:
                 wandb.log({
                     "train/psnr": float(psnr),
                     "train/loss": float(loss.item()),
                     "train/xy_plane_psnr": float(plane_psnr_dict['xy']),
-                    "train/xz_plane_psnr": float(plane_psnr_dict['xz']),
-                    "train/yz_plane_psnr": float(plane_psnr_dict['yz']),
-                    "train/total_bpp": float(total_bpp),
+                    # "train/xz_plane_psnr": float(plane_psnr_dict['xz']),
+                    # "train/yz_plane_psnr": float(plane_psnr_dict['yz']),
+                    "train/rec_loss": float(rec_loss.item()),
+                    "train/bpp_loss": float(bpp_loss.item()),
+                    "train/total_bpp": float(avg_bpp),
                     "time/elapsed_s": dt,
                 }, step=step)
 
             if step % cfg_t.save_every == 0 and step >= cfg_t.save_after:
                 self.model.save_checkpoints()
+
         print('Training finished.')
 
 # ------------------------------------------------------------------------------
@@ -333,11 +347,12 @@ if __name__ == '__main__':
     cfg.data.frame_ids = args.frame_ids
 
     # initialize wandb
-    wandb.init(
-      project=cfg.wandbprojectname,
-      name=cfg.expname,
-      config=vars(args)
-    )
+    if WANDB:
+        wandb.init(
+        project=cfg.wandbprojectname,
+        name=cfg.expname,
+        config=vars(args)
+        )
 
     if torch.cuda.is_available():
         torch.set_default_tensor_type('torch.cuda.FloatTensor')

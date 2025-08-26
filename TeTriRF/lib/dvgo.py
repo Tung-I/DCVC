@@ -670,7 +670,7 @@ def get_training_rays_multi_frame(rgb_tr_ori, train_poses, HW, Ks, ndc, inverse_
     imsz = []
     frame_ids_tr = []
     top = 0
-    for ind,c2w, img, (H, W), K, id in zip(range(len(train_poses)), train_poses, rgb_tr_ori, HW, Ks, frame_ids):
+    for ind, c2w, img, (H, W), K, id in zip(range(len(train_poses)), train_poses, rgb_tr_ori, HW, Ks, frame_ids):
         assert img.shape[:2] == (H, W)
         rays_o, rays_d, viewdirs = get_rays_of_a_view(
                 H=H, W=W, K=K, c2w=c2w, ndc=ndc,

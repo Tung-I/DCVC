@@ -20,6 +20,11 @@ Notes:
 - Points are sorted on x-axis by bitrate.
 """
 
+"""
+Usage:
+    python plot_triplane_image_rdcurve.py --root logs/out_triplane/flame_steak_image --annotate
+"""
+
 import os
 import re
 import argparse
@@ -29,7 +34,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import csv
 
-FOLDER_RX = re.compile(r"^triplanes_\d{2}_\d{2}_qp(\d+)_([a-z]+)_([a-z_]+)$")
+FOLDER_RX = re.compile(r"^planeimg_\d{2}_\d{2}_([a-z]+)_([a-z_]+)_qp(\d+)$")
 
 def read_float(path: str) -> Optional[float]:
     if not os.path.isfile(path):
@@ -55,7 +60,7 @@ def collect_results(root: str) -> List[Tuple[float, float, Optional[int], str]]:
         m = FOLDER_RX.match(name)
         if not m:
             continue
-        qp = int(m.group(1)) if m else None
+        qp = int(m.group(3)) if m else None
         folder = os.path.join(root, name)
 
         bits_path = os.path.join(folder, "encoded_bits.txt")
@@ -76,8 +81,8 @@ def collect_results(root: str) -> List[Tuple[float, float, Optional[int], str]]:
 def parse_args():
     ap = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     ap.add_argument("--root", required=True, help="Directory containing triplanes_* result folders")
-    ap.add_argument("--out", default="rd_curve.png", help="Output plot image filename (saved under --root if relative)")
-    ap.add_argument("--csv", default="rd_points.csv", help="Output CSV of collected points (saved under --root if relative). Use '' to skip.")
+    ap.add_argument("--out", default="plots/rd_curve.png", help="Output plot image filename (saved under --root if relative)")
+    ap.add_argument("--csv", default="plots/rd_points.csv", help="Output CSV of collected points (saved under --root if relative). Use '' to skip.")
     ap.add_argument("--annotate", action="store_true", help="Annotate points with QP")
     return ap.parse_args()
 

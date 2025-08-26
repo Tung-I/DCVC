@@ -72,16 +72,13 @@ def main():
     S, N = args.startframe, args.startframe + args.numframe - 1
 
     root = args.logdir.rstrip("/")
-    dec_root = os.path.join(root, f"planeimg_{S:02d}_{N:02d}_{args.strategy}_{args.qmode}")
-
-    out_tag = "dcvc_triplanes" if args.dcvc else "triplanes"
-    out_root = os.path.join(root, f"{out_tag}_{S:02d}_{N:02d}_qp{args.qp}_{args.strategy}_{args.qmode}")
-    os.makedirs(out_root, exist_ok=True)
+    meta_root = os.path.join(root, f"planeimg_{S:02d}_{N:02d}_{args.strategy}_{args.qmode}")
+    out_root = os.path.join(root, f"planeimg_{S:02d}_{N:02d}_{args.strategy}_{args.qmode}_qp{args.qp}")
 
     # ---------------------------------------------------------------------
     # load meta + template ckpt
     # ---------------------------------------------------------------------
-    meta = torch.load(os.path.join(dec_root, "planes_frame_meta.nf"))
+    meta = torch.load(os.path.join(meta_root, "planes_frame_meta.nf"))
     bounds = meta["bounds"]            # dict[plane][frame][channel] -> (low, hi)
     group_map = meta.get("groups", None)
     qmode_saved = meta["qmode"]
@@ -104,71 +101,71 @@ def main():
             feat = torch.zeros(1, C, H, W)
 
             if args.strategy == "tiling":
-                folder = os.path.join(dec_root, plane_name)
-                if args.dcvc:
-                    folder = f"{folder}_qp{args.qp}" if os.path.isdir(f"{folder}_qp{args.qp}") else folder
-                    img = cv2.imread(os.path.join(folder, f"im{fid + 1:05d}.png"), -1)
-                else:
-                    folder = f"{folder}_qp{args.qp}" if os.path.isdir(f"{folder}_qp{args.qp}") else folder
-                    img = cv2.imread(os.path.join(folder, f"im{fid + 1:05d}_decoded.png"), -1)
+                folder = os.path.join(out_root, plane_name)
+                img = cv2.imread(os.path.join(folder, f"im{fid + 1:05d}.png"), -1)
+                if img is None:
+                    raise FileNotFoundError(f"Image not found: {folder}/im{fid + 1:05d}.png")
                 feat = untile_image(img.astype(np.float32) / nbits, H, W, C)
 
             elif args.strategy == "separate":
-                base = os.path.join(dec_root, plane_name)
-                for c in range(C):
-                    sub = os.path.join(base, ("dcvc_" if args.dcvc else "") + f"c{c}_qp{args.qp}")
-                    img_name = f"im{fid + 1:05d}.png" if args.dcvc else f"im{fid + 1:05d}_decoded.png"
-                    img = cv2.imread(os.path.join(sub, img_name), -1)
-                    feat[0, c] = torch.from_numpy(img.astype(np.float32) / nbits)
+                # base = os.path.join(dec_root, plane_name)
+                # for c in range(C):
+                #     sub = os.path.join(base, ("dcvc_" if args.dcvc else "") + f"c{c}_qp{args.qp}")
+                #     img_name = f"im{fid + 1:05d}.png" if args.dcvc else f"im{fid + 1:05d}_decoded.png"
+                #     img = cv2.imread(os.path.join(sub, img_name), -1)
+                #     feat[0, c] = torch.from_numpy(img.astype(np.float32) / nbits)
+                raise NotImplementedError("Separate strategy not implemented")
 
             elif args.strategy in ("grouped", "correlation"):
-                base = os.path.join(dec_root, plane_name)
-                groups = (C + 2) // 3
-                if args.strategy == "grouped":
-                    group_indices: List[List[int]] = [list(range(3 * g, min(3 * g + 3, C))) for g in range(groups)]
-                else:  # correlation – use mapping stored in meta
-                    assert group_map is not None, "correlation groups not found in metadata"
-                    group_indices: List[List[int]] = group_map[plane_name][frame_idx]
+                # base = os.path.join(dec_root, plane_name)
+                # groups = (C + 2) // 3
+                # if args.strategy == "grouped":
+                #     group_indices: List[List[int]] = [list(range(3 * g, min(3 * g + 3, C))) for g in range(groups)]
+                # else:  # correlation – use mapping stored in meta
+                #     assert group_map is not None, "correlation groups not found in metadata"
+                #     group_indices: List[List[int]] = group_map[plane_name][frame_idx]
 
-                for g, idxs in enumerate(group_indices):
-                    sub = os.path.join(base, ("dcvc_" if args.dcvc else "") + f"stream{g}_qp{args.qp}")
-                    img_name = f"im{fid + 1:05d}.png" if args.dcvc else f"im{fid + 1:05d}_decoded.png"
-                    arr = cv2.imread(os.path.join(sub, img_name), -1)
-                    if len(idxs) == 3:
-                        b, g_, r = cv2.split(arr)
-                        for k, ch in enumerate([r, g_, b]):
-                            feat[0, idxs[k]] = torch.from_numpy(ch.astype(np.float32) / nbits)
-                    else:
-                        feat[0, idxs[0]] = torch.from_numpy(arr.astype(np.float32) / nbits)
+                # for g, idxs in enumerate(group_indices):
+                #     sub = os.path.join(base, ("dcvc_" if args.dcvc else "") + f"stream{g}_qp{args.qp}")
+                #     img_name = f"im{fid + 1:05d}.png" if args.dcvc else f"im{fid + 1:05d}_decoded.png"
+                #     arr = cv2.imread(os.path.join(sub, img_name), -1)
+                #     if len(idxs) == 3:
+                #         b, g_, r = cv2.split(arr)
+                #         for k, ch in enumerate([r, g_, b]):
+                #             feat[0, idxs[k]] = torch.from_numpy(ch.astype(np.float32) / nbits)
+                #     else:
+                #         feat[0, idxs[0]] = torch.from_numpy(arr.astype(np.float32) / nbits)
+                raise NotImplementedError("Grouped/Correlation strategy not implemented")
             elif args.strategy == "flatfour":
-                # -----------------------------------------------------------
-                #  flat-4 unpacking
-                #    • one BGR image per plane & frame
-                #    • each colour channel contains a 2×2 tiling of four
-                #      mono feature maps -> recover 12 channels total
-                # -----------------------------------------------------------
-                assert C == 12 and C % 4 == 0, "flatfour expects exactly 12 channels"
+                # # -----------------------------------------------------------
+                # #  flat-4 unpacking
+                # #    • one BGR image per plane & frame
+                # #    • each colour channel contains a 2×2 tiling of four
+                # #      mono feature maps -> recover 12 channels total
+                # # -----------------------------------------------------------
+                # assert C == 12 and C % 4 == 0, "flatfour expects exactly 12 channels"
 
-                # Locate the decoded (or DCVC) image
-                folder = os.path.join(dec_root, plane_name)
-                folder = f"{folder}_qp{args.qp}" if os.path.isdir(f"{folder}_qp{args.qp}") else folder
-                img_name = f"im{fid + 1:05d}.png" if args.dcvc else f"im{fid + 1:05d}_decoded.png"
-                arr = cv2.imread(os.path.join(folder, img_name), -1)          # (H*2, W*2, 3)
+                # # Locate the decoded (or DCVC) image
+                # folder = os.path.join(dec_root, plane_name)
+                # folder = f"{folder}_qp{args.qp}" if os.path.isdir(f"{folder}_qp{args.qp}") else folder
+                # img_name = f"im{fid + 1:05d}.png" if args.dcvc else f"im{fid + 1:05d}_decoded.png"
+                # arr = cv2.imread(os.path.join(folder, img_name), -1)          # (H*2, W*2, 3)
 
-                H2, W2 = arr.shape[:2]
-                h_orig, w_orig = H2 // 2, W2 // 2        # original per-channel dims
+                # H2, W2 = arr.shape[:2]
+                # h_orig, w_orig = H2 // 2, W2 // 2        # original per-channel dims
 
-                # OpenCV = BGR, but packer wrote BGR = [block2, block1, block0]
-                colour_blocks = [arr[:, :, 2],  # R  -> channels 0-3
-                                 arr[:, :, 1],  # G  -> channels 4-7
-                                 arr[:, :, 0]]  # B  -> channels 8-11
+                # # OpenCV = BGR, but packer wrote BGR = [block2, block1, block0]
+                # colour_blocks = [arr[:, :, 2],  # R  -> channels 0-3
+                #                  arr[:, :, 1],  # G  -> channels 4-7
+                #                  arr[:, :, 0]]  # B  -> channels 8-11
 
-                for block_idx, mono in enumerate(colour_blocks):
-                    mono_norm = mono.astype(np.float32) / NBITS
-                    # untile back to the 4 individual channels
-                    mono_feat = untile_image(mono_norm, h_orig, w_orig, 4)   # [1,4,H,W]
-                    start = block_idx * 4
-                    feat[0, start : start + 4] = mono_feat[0]
+                # for block_idx, mono in enumerate(colour_blocks):
+                #     mono_norm = mono.astype(np.float32) / NBITS
+                #     # untile back to the 4 individual channels
+                #     mono_feat = untile_image(mono_norm, h_orig, w_orig, 4)   # [1,4,H,W]
+                #     start = block_idx * 4
+                #     feat[0, start : start + 4] = mono_feat[0]
+                raise NotImplementedError("Flat-four unpacking not implemented")
             else:
                 raise ValueError("Unknown strategy")
 
@@ -186,9 +183,8 @@ def main():
             ckpt_cur["model_state_dict"][f"k0.{plane_name}"] = feat.clone()
 
         # -------------------- density grid ---------------------
-        dens_folder_base = os.path.join(dec_root, "density")
-        dens_folder = (f"{dens_folder_base}_qp{args.qp}") if args.dcvc else (f"{dens_folder_base}_qp{args.qp}")
-        img_name = f"im{fid + 1:05d}.png" if args.dcvc else f"im{fid + 1:05d}_decoded.png"
+        dens_folder = os.path.join(out_root, "density")
+        img_name = f"im{fid + 1:05d}.png"
         img = cv2.imread(os.path.join(dens_folder, img_name), -1)
         d = untile_image(img.astype(np.float32) / nbits, dens_shape[2], dens_shape[4], dens_shape[3])
         # undo density quantisation

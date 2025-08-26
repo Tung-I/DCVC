@@ -17,7 +17,7 @@ from src.utils.stream_helper import SPSHelper, NalType, write_sps, read_header, 
 from src.utils.transforms import rgb2ycbcr, ycbcr2rgb, yuv_444_to_420
 
 
-class DCVCImageCodecWrapper:
+class DCVCImageCodec:
     """DCVC Image Compression Codec for tensor inputs."""
 
     def __init__(self, weight_path="./checkpoint/cvpr2025_image.pth.tar", device='cuda'):

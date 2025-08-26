@@ -18,13 +18,11 @@ from .sh import eval_sh
 import time
 from torch.serialization import safe_globals
 from .dvgo_video import RGB_Net, RGB_SH_Net
-from .plane_codec_dcvc import DCVCPlaneCodec, DCVCImageCodec, DCVCImageCodecInfer
+from .dcvc_wrapper import DCVCPlaneCodec, DCVCImageCodec, DCVCImageCodecInfer
 
 
 class DCVC_DVGO_Video(torch.nn.Module):
-    def __init__(self, frameids, xyz_min, xyz_max, cfg=None, device='cuda', 
-                 dcvc_qp=0, freeze_dcvc_enc=True, freeze_dcvc_dec=True, 
-                 convert_ycbcr=True, infer_mode=False):
+    def __init__(self, frameids, xyz_min, xyz_max, cfg=None, device='cuda', infer_mode=False):
         super(DCVC_DVGO_Video, self).__init__()
 
         self.xyz_min = xyz_min
@@ -37,36 +35,167 @@ class DCVC_DVGO_Video(torch.nn.Module):
 
         self.initial_models()
 
-        self.last_bpp   = torch.tensor(0., device=device)
-        self.planes_are_dirty = True   # set True whenever you *update* planes
-
         self.infer_mode = infer_mode
         if not self.infer_mode:
             if len(self.frameids) == 1:
                 in_channels = int(cfg.fine_model_and_render.rgbnet_dim / 3)
                 self.codec = DCVCImageCodec(
-                    qp=cfg.fine_train.dcvc_qp, device=device, in_channels=in_channels,
-                    unet_pre_base=cfg.fine_model_and_render.unet_pre_base,
-                    unet_post_base=cfg.fine_model_and_render.unet_post_base,
-                    sandwich=cfg.fine_model_and_render.sandwich,
+                    self.cfg.dcvc, device
                 )
             else:
-                self.codec = DCVCPlaneCodec(qp=dcvc_qp, device=device)
+                raise RuntimeError("DCVCImageCodec only supports single frame input.")
+          
         else:
             if len(self.frameids) == 1:
                 in_channels = int(cfg.fine_model_and_render.rgbnet_dim / 3)
                 self.codec = DCVCImageCodecInfer(
-                    device=device, qp=cfg.fine_train.dcvc_qp, in_channels=in_channels
+                    device=device, qp=cfg.dcvc.dcvc_qp, in_channels=in_channels
                 )
             else:
                 raise RuntimeError("DCVCImageCodecInfer only supports single frame input.")
 
-        
-        self.triplane_frozen = False
-        self.rgbnet_frozen = False
+        self.codec_refresh_k = int(getattr(self.cfg.fine_train, "codec_refresh_k", 1))
+        self.bpp_mode = getattr(self.cfg.fine_train, "bpp_mode", "hold")
+        self.refresh_trigger_eps = float(getattr(self.cfg.fine_train, "refresh_trigger_eps", 0.0))
+        self._codec_cache_step = -1
+        self._codec_cache = {ax: None for ax in ('xy','xz','yz')}          # detached recon (1,C,H,W)
+        self._codec_cache_bpp = {ax: None for ax in ('xy','xz','yz')}      # float tensor
+        self._codec_cache_psnr = {ax: None for ax in ('xy','xz','yz')}     # float tensor
+        # (optional) snapshot of raw planes at cache time, for change detection
+        self._codec_cache_rawsnap = {ax: None for ax in ('xy','xz','yz')}
 
+    def _gather_planes_one_frame(self, frameid):
+        k0 = self.dvgos[str(frameid)].k0
+        return {
+            'xy': getattr(k0, 'xy_plane'),  # (1,C,H,W) nn.Parameter
+            'xz': getattr(k0, 'xz_plane'),
+            'yz': getattr(k0, 'yz_plane'),
+        }
 
-    def run_codec_once(self):
+    def _encode_decode_one_frame(self, frameid):
+        """Functional encode-decode that returns recon planes for THIS frame only, w/o mutation."""
+        planes = self._gather_planes_one_frame(frameid)  # dict of (C,H,W)
+        recon_by_axis = {}
+        bpp_by_axis   = {}
+        psnr_by_axis  = {}
+
+        for ax in ('xy','xz','yz'):
+            # Pack (C,H,W)->image-like for your wrapper if needed (your codec already expects (T,C,H,W))
+            x = planes[ax] # (1,C,H,W)
+            recon, bpp, plane_psnr = self.codec(x)  # must be differentiable (no .detach() inside)
+            recon_by_axis[ax] = recon        
+            bpp_by_axis[ax]   = bpp
+            psnr_by_axis[ax]  = plane_psnr
+
+        return recon_by_axis, bpp_by_axis, psnr_by_axis
+
+    def forward(self, rays_o, rays_d, viewdirs, frame_ids, global_step=None, mode='feat', **render_kwargs):
+        frame_ids_unique = torch.unique(frame_ids, sorted=True).cpu().int().numpy().tolist()
+        assert len(frame_ids_unique) == 1, "Expect a single frame per batch"
+        frameid = frame_ids_unique[0]
+        dvgo = self.dvgos[str(frameid)]
+
+        # Refresh cache if needed (runs DCVC at most every K steps)
+        self._maybe_refresh_codec_cache(frameid, global_step)
+
+        # Build param overrides using STE from cache
+        param_map  = dict(dvgo.named_parameters())
+        buffer_map = dict(dvgo.named_buffers())
+        param_overrides = self._ste_overrides(frameid)
+
+        # Render with functional_call
+        merged = {**param_map, **param_overrides}
+        ret_frame = torch.nn.utils.stateless.functional_call(
+            dvgo,
+            merged | buffer_map,
+            (rays_o, rays_d, viewdirs),
+            {'shared_rgbnet': self.rgbnet, 'global_step': global_step, 'mode': mode, **render_kwargs}
+        )
+
+        # BPP reporting / weighting
+        bpps = [self._codec_cache_bpp[ax] for ax in ('xy','xz','yz')]
+        avg_bpp = sum(bpps) / 3.0
+
+        # Optionally apply bpp only on refresh steps (with or without scaling)
+        if self.bpp_mode != "hold":
+            is_refresh = (global_step is None) or (global_step == self._codec_cache_step)
+            if self.bpp_mode == "refresh_only":
+                avg_bpp = avg_bpp if is_refresh else avg_bpp * 0.0
+            elif self.bpp_mode == "scale_on_refresh":
+                # keep expected contribution similar: only on refresh, scaled by K
+                avg_bpp = (avg_bpp * self.codec_refresh_k) if is_refresh else avg_bpp * 0.0
+
+        # pass through some diagnostics if useful
+        psnr_by_axis = {ax: self._codec_cache_psnr[ax] for ax in ('xy','xz','yz')}
+        return ret_frame, avg_bpp, psnr_by_axis
+
+    def invalidate_codec_cache(self):
+        self._codec_cache_step = -1
+        for ax in ('xy','xz','yz'):
+            self._codec_cache[ax] = None
+            self._codec_cache_bpp[ax] = None
+            self._codec_cache_psnr[ax] = None
+            self._codec_cache_rawsnap[ax] = None
+
+    @torch.no_grad()
+    def _planes_changed_too_much(self, planes: dict) -> bool:
+        """Optional early refresh trigger based on relative L2 change."""
+        if self.refresh_trigger_eps <= 0:
+            return False
+        changed = False
+        for ax, p in planes.items():
+            snap = self._codec_cache_rawsnap[ax]
+            if snap is None or snap.shape != p.shape:
+                return True
+            num = (p - snap).float().pow(2).sum()
+            den = snap.float().pow(2).sum().clamp_min(1e-12)
+            rel = (num / den).sqrt()
+            if rel.item() > self.refresh_trigger_eps:
+                changed = True
+                break
+        return changed
+
+    def _maybe_refresh_codec_cache(self, frameid, global_step):
+        """Run DCVC if cache is stale or invalid; store *detached* recons/bpp."""
+        planes = self._gather_planes_one_frame(frameid)  # params (1,C,H,W)
+        need_refresh = (
+            self._codec_cache_step < 0 or
+            self.codec_refresh_k <= 1 or
+            (global_step is not None and (global_step - self._codec_cache_step) >= self.codec_refresh_k) or
+            self._planes_changed_too_much(planes)
+        )
+        if not need_refresh:
+            return  # keep cache
+
+        # (Re)compute codec outputs and refresh cache
+        recon_by_axis = {}
+        bpp_by_axis   = {}
+        psnr_by_axis  = {}
+        for ax in ('xy','xz','yz'):
+            x = planes[ax]  # (1,C,H,W), fp32
+            recon, bpp, plane_psnr = self.codec(x)  # recon: fp32, same shape; differentiable
+            # Store detached cache; keep dtype/device
+            self._codec_cache[ax]      = recon.detach()
+            self._codec_cache_bpp[ax]  = bpp.detach() if torch.is_tensor(bpp) else torch.tensor(float(bpp), device=x.device)
+            self._codec_cache_psnr[ax] = plane_psnr.detach() if torch.is_tensor(plane_psnr) else torch.tensor(float(plane_psnr), device=x.device)
+            self._codec_cache_rawsnap[ax] = x.detach()
+
+        self._codec_cache_step = int(global_step if global_step is not None else 0)
+
+    def _ste_overrides(self, frameid):
+        """Build STE substituted planes for functional_call from cached recons."""
+        planes = self._gather_planes_one_frame(frameid)
+        overrides = {}
+        for ax, name in [('xy','k0.xy_plane'), ('xz','k0.xz_plane'), ('yz','k0.yz_plane')]:
+            raw = planes[ax]                # (1,C,H,W) param
+            rec = self._codec_cache[ax]     # (1,C,H,W) detached tensor
+            assert rec is not None, "Codec cache is empty—call _maybe_refresh_codec_cache() first."
+            # Straight-through estimator: forward==rec, grad wrt raw is identity
+            ste = rec + (raw - raw.detach())
+            overrides[name] = ste
+        return overrides
+
+    def infer_once(self):
         """Encode-decode xy/xz/yz planes; store distorted planes & bpp."""
         planes_by_axis = {'xy': [], 'xz': [], 'yz': []}
         for fid in self.frameids:
@@ -94,14 +223,15 @@ class DCVC_DVGO_Video(torch.nn.Module):
         return plane_psnr_dict, bpp_dict
 
 
-    def forward(self, rays_o, rays_d, viewdirs, frame_ids, global_step=None, mode='feat', **render_kwargs):
+    # def forward(self, rays_o, rays_d, viewdirs, frame_ids, global_step=None, mode='feat', **render_kwargs):
         
-        frame_ids_unique = torch.unique(frame_ids, sorted=True).cpu().int().numpy().tolist()   
-        assert len(frame_ids_unique) == 1
-        frameid = frame_ids_unique[0]
-        ret_frame = self.dvgos[str(frameid)](rays_o, rays_d, viewdirs, shared_rgbnet= self.rgbnet, global_step=global_step, mode=mode, **render_kwargs)
+    #     frame_ids_unique = torch.unique(frame_ids, sorted=True).cpu().int().numpy().tolist()   
+    #     assert len(frame_ids_unique) == 1
+    #     frameid = frame_ids_unique[0]
+    #     ret_frame = self.dvgos[str(frameid)](rays_o, rays_d, viewdirs, shared_rgbnet= self.rgbnet, global_step=global_step, mode=mode, **render_kwargs)
 
-        return ret_frame
+    #     psnr_by_axis = {'xy': 0., 'xz': 0., 'yz': 0.}
+    #     return ret_frame, 0., psnr_by_axis
 
     def initial_models(self):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -164,33 +294,37 @@ class DCVC_DVGO_Video(torch.nn.Module):
         ret = []
 
         for frameid in self.frameids:
-            frameid = str(frameid)
-            last_ckpt_path = os.path.join(cfg.basedir, cfg.ckptname, f'fine_last_{frameid}.tar')
-            if not os.path.isfile(last_ckpt_path):
-                print(f"Frame {frameid}'s checkpoint doesn't exist")
-                # Always try to load the pre-trained triplane model
-                raise FileNotFoundError(f"Checkpoint for frame {frameid} not found at {last_ckpt_path}")
+            try:
+                frameid = str(frameid)
+                last_ckpt_path = os.path.join(cfg.basedir, cfg.ckptname, f'fine_last_{frameid}.tar')
+                if not os.path.isfile(last_ckpt_path):
+                    print(f"Frame {frameid}'s checkpoint doesn't exist")
+                    # Always try to load the pre-trained triplane model
+                    raise FileNotFoundError(f"Checkpoint for frame {frameid} not found at {last_ckpt_path}")
 
-            # allowlist numpy._core.multiarray._reconstruct
-            ckpt = torch.load(last_ckpt_path, weights_only=False)
+                # allowlist numpy._core.multiarray._reconstruct
+                ckpt = torch.load(last_ckpt_path, weights_only=False)
 
-            model_kwargs = ckpt['model_kwargs']
-            if self.cfg.data.ndc:
-                self.dvgos[frameid] = DirectMPIGO(**model_kwargs)
-            else:
-                self.dvgos[frameid] = DirectVoxGO(**model_kwargs)
-            self.dvgos[frameid].load_state_dict(ckpt['model_state_dict'], strict=True)
-            self.dvgos[frameid] = self.dvgos[frameid].cuda()
-            print(f"Frame {frameid}'s checkpoint loaded.")
-            ret.append(int(frameid))
-            # break
+                model_kwargs = ckpt['model_kwargs']
+                if self.cfg.data.ndc:
+                    self.dvgos[frameid] = DirectMPIGO(**model_kwargs)
+                else:
+                    self.dvgos[frameid] = DirectVoxGO(**model_kwargs)
+                self.dvgos[frameid].load_state_dict(ckpt['model_state_dict'], strict=True)
+                self.dvgos[frameid] = self.dvgos[frameid].cuda()
+                print(f"Frame {frameid}'s checkpoint loaded.")
+                ret.append(int(frameid))
+            except Exception as e:
+                print(f"Error loading checkpoint for frame {frameid}: {e}")
 
-        beg = self.frameids[0]
-        eend = self.frameids[-1]
-        rgbnet_file = os.path.join(cfg.basedir, cfg.ckptname, f'rgbnet_{beg}_{eend}.tar')
-        
-        checkpoint =torch.load(rgbnet_file)
-        self.rgbnet.load_state_dict(checkpoint['model_state_dict']) 
+        try:
+            beg = self.frameids[0]
+            eend = self.frameids[-1]
+            rgbnet_file = os.path.join(cfg.basedir, cfg.ckptname, f'rgbnet_{beg}_{eend}.tar')
+            checkpoint =torch.load(rgbnet_file)
+            self.rgbnet.load_state_dict(checkpoint['model_state_dict']) 
+        except Exception as e:
+            print(f"Error loading RGBNet checkpoint: {e}")
         return ret
 
     def save_checkpoints(self):
@@ -374,6 +508,47 @@ class DCVC_DVGO_Video(torch.nn.Module):
 
     
 
-       
+#############################################
+    # def forward(self, rays_o, rays_d, viewdirs, frame_ids, global_step=None, mode='feat', **render_kwargs):
+    #     frame_ids_unique = torch.unique(frame_ids, sorted=True).cpu().int().numpy().tolist()
+    #     assert len(frame_ids_unique) == 1, "Expect a single frame per batch"
+    #     frameid = frame_ids_unique[0]
+    #     dvgo = self.dvgos[str(frameid)]
 
-        
+    #     # 1) Get codec-distorted planes for THIS frame (no mutation)
+    #     recon_by_axis, bpp_by_axis, psnr_by_axis = self._encode_decode_one_frame(frameid)
+
+    #     # NOTE: To-do, Cache recon_detached for K−1 steps and use STE bypass:
+    #     # recon = recon_detached + (raw_planes - raw_planes.detach())
+
+    #     # 2) Build a temporary param override dict for functional_call
+    #     #    Names below assume parameters are registered as k0.xy_plane, etc.
+    #     param_map = dict(dvgo.named_parameters())
+    #     buffer_map = dict(dvgo.named_buffers())
+
+    #     # Ensure recon tensors are on the correct device/dtype and have the registered shape (1,C,H,W) if needed
+    #     def fix_shape(t, like):
+    #         # If your k0 planes are registered as (1,C,H,W), unsqueeze
+    #         return t.unsqueeze(0) if (like.dim()==4 and like.shape[0]==1 and t.dim()==3) else t
+
+    #     param_overrides = {}
+    #     for ax, name in [('xy','k0.xy_plane'), ('xz','k0.xz_plane'), ('yz','k0.yz_plane')]:
+    #         like = dict(dvgo.named_parameters())[name]
+    #         param_overrides[name] = fix_shape(recon_by_axis[ax].to(like.device, like.dtype), like)
+
+    #     # NOTE: do NOT .data assign. Just override for this call:
+    #     merged = {**param_map, **param_overrides}
+    #     # 3) Call dvgo forward "as if" those params were the module's parameters
+    #     ret_frame = functional_call(
+    #         dvgo,
+    #         merged | buffer_map,  
+    #         (rays_o, rays_d, viewdirs),
+    #         {'shared_rgbnet': self.rgbnet, 'global_step': global_step, 'mode': mode, **render_kwargs}
+    #     )
+
+    #     avg_bpp = 0.
+    #     for ax in ('xy','xz','yz'):
+    #         avg_bpp += bpp_by_axis[ax]
+    #     avg_bpp /= 3.0   # NOTE: Change this when considering density grid
+
+    #     return ret_frame, avg_bpp, psnr_by_axis
