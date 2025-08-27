@@ -22,17 +22,21 @@ class DCVCImageCodec(torch.nn.Module):
     ):
         super().__init__()
         self.device = device
-        self.i_frame_net = DMCI()
-        i_state_dict = get_state_dict(cfg_dcvc.ckpt_path)
-        self.i_frame_net.load_state_dict(i_state_dict)
-        self.i_frame_net.to(device)
-        self.i_frame_net.eval()
-        self.i_frame_net.half()
-        self.i_frame_net.update(force_zero_thres)
-        self.cfg_dcvc = cfg_dcvc
 
-        if cfg_dcvc.freeze_dcvc:
-            freeze_iframenet_all(self.i_frame_net)
+        if not infer_mode:
+            self.i_frame_net = DMCI()
+            i_state_dict = get_state_dict(cfg_dcvc.ckpt_path)
+            self.i_frame_net.load_state_dict(i_state_dict)
+            self.i_frame_net.to(device)
+            self.i_frame_net.eval()
+            self.i_frame_net.half()
+            self.i_frame_net.update(force_zero_thres)
+            self.cfg_dcvc = cfg_dcvc
+
+            if cfg_dcvc.freeze_dcvc:
+                freeze_iframenet_all(self.i_frame_net)
+        else:
+            self.codec_wrapper = dcvc_inference_wrapper("/home/tungichen_umass_edu/DCVC/checkpoints/cvpr2025_image.pth.tar")
 
         self.packing_mode = cfg_dcvc.packing_mode
         self.pack_fn   = pack_planes_to_rgb
@@ -49,7 +53,7 @@ class DCVCImageCodec(torch.nn.Module):
         self.amp_dtype = torch.float16  # keep TriPlane in fp32, only DCVC in fp16
     
         self.infer_mode = infer_mode
-        
+
     def forward(self, frame: torch.Tensor):
         """
         frame: [1, C,H,W] (float). Returns (recon_frame, bpp).
@@ -75,10 +79,17 @@ class DCVCImageCodec(torch.nn.Module):
         # Run DCVC
         y_half = y_pad.to(torch.float16)
         with torch.cuda.amp.autocast(enabled=self.use_amp, dtype=self.amp_dtype):
-            result = dcvc_image_codec_forward(
-                y_half, self.qp, self.i_frame_net, device=self.device
-            )
-            x_hat_half = result['x_hat'][..., :H2p, :W2p]
+
+            if not self.infer_mode:
+                result = dcvc_image_codec_forward(
+                    y_half, self.qp, self.i_frame_net, device=self.device
+                )
+                x_hat_half = result['x_hat'][..., :H2p, :W2p]
+            else:
+                enc_result = self.codec_wrapper.compress(y_half, self.qp)
+                bits = self.codec_wrapper.measure_size(enc_result, self.qp)
+                dec_result  = self.codec_wrapper.decompress(enc_result)
+                x_hat_half = dec_result[..., :H2p, :W2p]
 
         # Exit AMP, cast to fp32 for numerics and to match TriPlane later
         x_hat32 = x_hat_half.to(torch.float32)
@@ -103,8 +114,10 @@ class DCVCImageCodec(torch.nn.Module):
         #     err_dbg = (rec01_dbg - x01).abs().max().item()
         #     assert err_dbg < 1e-6, f"Pack/unpack not inverse: max abs err {err_dbg}"
 
-
-        return recon, result['bpp'], plane_psnr
+        if not self.infer_mode:
+            return recon, result['bpp'], plane_psnr
+        else:
+            recon, bits, plane_psnr, enc_result['bit_stream']
 
 
 class DCVCImageCodecInfer(torch.nn.Module):

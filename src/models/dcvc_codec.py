@@ -16,7 +16,6 @@ from src.utils.stream_helper import SPSHelper, NalType, write_sps, read_header, 
     read_sps_remaining, read_ip_remaining, write_ip
 from src.utils.transforms import rgb2ycbcr, ycbcr2rgb, yuv_444_to_420
 
-
 class DCVCImageCodec:
     """DCVC Image Compression Codec for tensor inputs."""
 

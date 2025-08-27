@@ -6,6 +6,7 @@ from mmengine.config import Config
 import imageio
 import numpy as np
 import ipdb
+import pathlib
 
 import torch
 import torch.nn as nn
@@ -21,7 +22,7 @@ import time
 
 """
 Usage:
-    python render.py --config  TeTriRF/configs/N3D/flame_steak_image.py --frame_ids 0 --render_test --startframe 0 --numframe 1 --qp 10
+    python render.py --config  TeTriRF/configs/N3D/flame_steak_image.py --frame_ids 0 --render_test --startframe 0 --numframe 1 
 """
 
 def config_parser():
@@ -63,9 +64,8 @@ def config_parser():
     
     parser.add_argument("--startframe", type=int, default=0, help='start frame id')
     parser.add_argument("--numframe", type=int, default=20, help='number of frames')
-    parser.add_argument("--qp",   type=int, default=0)
     parser.add_argument("--reald", action='store_true', help='use compressed data or not, please do uncompression manully before use compressed data')
-    parser.add_argument("--dcvc", action='store_true', help='use compressed DCVC data or not')
+    parser.add_argument("--dcvc_dir", type=str, default=None, help='path to DCVC compressed ckpt')
     parser.add_argument("--qmode", type=str, default='global', choices=["global", "per_channel"])
     parser.add_argument('--strategy', type=str, default='tiling', choices=['tiling', 'separate', 'grouped', 'correlation', 'flatfour'],
                         help='tiling: original; separate: one channel per stream; grouped: RGB triplets + leftover')
@@ -231,7 +231,6 @@ if __name__=='__main__':
     args.dump_images = True
     start_frame_id = args.startframe
     numframe = args.numframe
-    qp = args.qp
     strategy = args.strategy
     S, N = args.startframe, args.startframe+args.numframe-1
     
@@ -262,16 +261,15 @@ if __name__=='__main__':
             if args.reald:
                 ckpt_path = os.path.join(cfg.basedir, cfg.expname, f"fine_last_{frame_id}.tar")
                 testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_test')
-            elif args.dcvc:
-                testsavedir = os.path.join(cfg.basedir, cfg.expname, 
-                                            f"dcvc_triplanes_{S:02d}_{N:02d}_qp{qp}_{strategy}",
-                                            f'render_test')
-                ckpt_path = os.path.join(cfg.basedir, cfg.expname, 
-                                            f"dcvc_triplanes_{S:02d}_{N:02d}_qp{qp}_{strategy}", 
-                                            f"fine_last_{frame_id}.tar")
+                rgbnet_file = os.path.join(cfg.basedir, cfg.expname, f'rgbnet.tar')
+            elif args.dcvc_dir:
+                testsavedir = os.path.join(args.dcvc_dir, f'render_test')
+                ckpt_path = os.path.join(args.dcvc_dir, f"fine_last_{frame_id}.tar")
+                rgbnet_file = os.path.join(cfg.basedir, cfg.expname, f'rgbnet.tar')
             elif args.aware:
                 ckpt_path = os.path.join(cfg.basedir, cfg.expname, f"compressed_{qp}_fine_last_{frame_id}.tar")
                 testsavedir = os.path.join(cfg.basedir, cfg.expname, f"compressed_{qp}_fine_last_{frame_id}", 'render_test')
+                rgbnet_file = os.path.join(cfg.basedir, cfg.expname, f'rgbnet.tar')
             else:
                 testsavedir = os.path.join(cfg.basedir, cfg.expname, 
                                             f"planeimg_{S:02d}_{N:02d}_{strategy}_{args.qmode}_qp{qp}",
@@ -279,6 +277,7 @@ if __name__=='__main__':
                 ckpt_path = os.path.join(cfg.basedir, cfg.expname, 
                                             f"planeimg_{S:02d}_{N:02d}_{strategy}_{args.qmode}_qp{qp}", 
                                             f"fine_last_{frame_id}.tar")
+                rgbnet_file = os.path.join(cfg.basedir, cfg.expname, f'rgbnet.tar')
                
 
         # Load model
@@ -290,7 +289,6 @@ if __name__=='__main__':
         model = utils.load_model(model_class, ckpt_path, weights_only=False).to(device)
         model.reset_occupancy_cache()
         
-        rgbnet_file = os.path.join(cfg.basedir, cfg.expname, f'rgbnet.tar')
         if cfg.fine_model_and_render.dynamic_rgbnet:
             rgbnet_file = None
             rgbnet_files = [f for f in os.listdir(os.path.join(cfg.basedir, cfg.expname)) if f.endswith('.tar') and 'rgbnet' in f]
@@ -345,27 +343,28 @@ if __name__=='__main__':
             },
         }
 
-    # # render trainset and eval
-    # if args.render_train:
-    #     if args.reald:
-    #         testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_train')
-    #     else:
-    #         testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_train_compressed')
-    #     os.makedirs(testsavedir, exist_ok=True)
-    #     print('All results are dumped into', testsavedir)
-    #     i_train = data_dict['i_train']
-    #     frame_ids = data_dict['frame_ids']
-    #     id_mask = (frame_ids==frame_id)[i_train]
-    #     t_train = np.array(i_train)[id_mask]
-    #     rgbs, depths, bgmaps,res_psnr = render_viewpoints(
-    #             render_poses=data_dict['poses'][t_train],
-    #             HW=data_dict['HW'][t_train],
-    #             Ks=data_dict['Ks'][t_train],
-    #             gt_imgs=[data_dict['images'][i].cpu().numpy() for i in t_train],
-    #             savedir=testsavedir, dump_images=args.dump_images,
-    #             eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
-    #             frame_id = frame_id,
-    #             **render_viewpoints_kwargs)
+        # render trainset and eval
+        if args.render_train:
+            # replace the last folder in testsavedir (e.g., render_test) with "render_train"
+            save_dir = pathlib.Path(testsavedir)
+            save_dir = save_dir.with_name("render_train")
+            testsavedir = str(save_dir)
+
+            os.makedirs(testsavedir, exist_ok=True)
+            print('All results are dumped into', testsavedir)
+            i_train = data_dict['i_train']
+            frame_ids = data_dict['frame_ids']
+            id_mask = (frame_ids==frame_id)[i_train]
+            t_train = np.array(i_train)[id_mask]
+            rgbs, depths, bgmaps,res_psnr = render_viewpoints(
+                    render_poses=data_dict['poses'][t_train],
+                    HW=data_dict['HW'][t_train],
+                    Ks=data_dict['Ks'][t_train],
+                    gt_imgs=[data_dict['images'][i].cpu().numpy() for i in t_train],
+                    savedir=testsavedir, dump_images=args.dump_images,
+                    eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
+                    frame_id = frame_id,
+                    **render_viewpoints_kwargs)
 
 
         if args.render_test:

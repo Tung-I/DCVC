@@ -36,24 +36,15 @@ class DCVC_DVGO_Video(torch.nn.Module):
         self.initial_models()
 
         self.infer_mode = infer_mode
-        if not self.infer_mode:
-            if len(self.frameids) == 1:
-                in_channels = int(cfg.fine_model_and_render.rgbnet_dim / 3)
-                self.codec = DCVCImageCodec(
-                    self.cfg.dcvc, device
-                )
-            else:
-                raise RuntimeError("DCVCImageCodec only supports single frame input.")
-          
+ 
+        if len(self.frameids) == 1:
+            in_channels = int(cfg.fine_model_and_render.rgbnet_dim / 3)
+            self.codec = DCVCImageCodec(
+                self.cfg.dcvc, device, infer_mode=infer_mode
+            )
         else:
-            if len(self.frameids) == 1:
-                in_channels = int(cfg.fine_model_and_render.rgbnet_dim / 3)
-                self.codec = DCVCImageCodecInfer(
-                    device=device, qp=cfg.dcvc.dcvc_qp, in_channels=in_channels
-                )
-            else:
-                raise RuntimeError("DCVCImageCodecInfer only supports single frame input.")
-
+            raise RuntimeError("DCVCImageCodec only supports single frame input.")
+          
         self.codec_refresh_k = int(getattr(self.cfg.fine_train, "codec_refresh_k", 1))
         self.bpp_mode = getattr(self.cfg.fine_train, "bpp_mode", "hold")
         self.refresh_trigger_eps = float(getattr(self.cfg.fine_train, "refresh_trigger_eps", 0.0))
@@ -88,6 +79,24 @@ class DCVC_DVGO_Video(torch.nn.Module):
             psnr_by_axis[ax]  = plane_psnr
 
         return recon_by_axis, bpp_by_axis, psnr_by_axis
+    
+    def _infer_one_frame(self, frameid):
+        # NOTE: To-do: also pass the density map
+        planes = self._gather_planes_one_frame(frameid)  # dict of (C,H,W)
+        recon_by_axis = {}
+        bits_by_axis   = {}
+        psnr_by_axis  = {}
+        bitstreams_by_axis = {}
+
+        for ax in ('xy','xz','yz'):
+            x = planes[ax] # (1,C,H,W)
+            recon, bits, plane_psnr, bit_streams = self.codec(x)  # must be differentiable (no .detach() inside)
+            recon_by_axis[ax] = recon        
+            bits_by_axis[ax]   = bits
+            psnr_by_axis[ax]  = plane_psnr
+            bitstreams_by_axis[ax] = bit_streams
+
+        return recon_by_axis, bits_by_axis, psnr_by_axis, bitstreams_by_axis
 
     def forward(self, rays_o, rays_d, viewdirs, frame_ids, global_step=None, mode='feat', **render_kwargs):
         frame_ids_unique = torch.unique(frame_ids, sorted=True).cpu().int().numpy().tolist()
@@ -195,32 +204,44 @@ class DCVC_DVGO_Video(torch.nn.Module):
             overrides[name] = ste
         return overrides
 
-    def infer_once(self):
-        """Encode-decode xy/xz/yz planes; store distorted planes & bpp."""
-        planes_by_axis = {'xy': [], 'xz': [], 'yz': []}
-        for fid in self.frameids:
-            k0 = self.dvgos[str(fid)].k0
-            for ax in planes_by_axis:
-                planes_by_axis[ax].append(getattr(k0, f'{ax}_plane').squeeze(0))
+    def infer(self, rays_o, rays_d, viewdirs, frame_ids, global_step=None, mode='feat', **render_kwargs):
+        # Expect a single frame id in the batch
+        frame_ids_unique = torch.unique(frame_ids, sorted=True).cpu().int().numpy().tolist()
+        assert len(frame_ids_unique) == 1, "Expect a single frame per batch"
+        frameid = frame_ids_unique[0]
+        dvgo = self.dvgos[str(frameid)]
 
-        bpp_dict = {}
-        plane_psnr_dict = {}
-        for ax, seq_list in planes_by_axis.items():
-            seq = torch.stack(seq_list, dim=0)         # [T,C,H,W]
-            H, W = seq.shape[2:4]
-            recon, bpp, plane_psnr = self.codec(seq)
-            bpp_dict[ax] = bpp
-            plane_psnr_dict[ax] = plane_psnr
-            # write back
-            idx = 0
-            for fid in self.frameids:
-                k0 = self.dvgos[str(fid)].k0
-                plane_t = recon[idx].unsqueeze(0)               # (1,C,H,W)
-                plane_t = plane_t.to(k0.xy_plane.device)        # device-safe
-                getattr(k0, f'{ax}_plane').data = plane_t
-                idx += 1
+        # Encode-decode corrupted planes ONCE (no cache / no STE)
+        with torch.inference_mode():
+            recon_by_axis, bits_by_axis, psnr_by_axis, bitstreams_by_axis = self._infer_one_frame(frameid)
 
-        return plane_psnr_dict, bpp_dict
+            # Build param overrides (just the corrupted planes; no STE needed in inference)
+            param_map  = dict(dvgo.named_parameters())
+            buffer_map = dict(dvgo.named_buffers())
+
+            def fix_shape(t, like):
+                # Ensure shape matches registered param (e.g., (1,C,H,W))
+                return t.unsqueeze(0) if (like.dim()==4 and like.shape[0]==1 and t.dim()==3) else t
+
+            param_overrides = {}
+            for ax, name in [('xy','k0.xy_plane'), ('xz','k0.xz_plane'), ('yz','k0.yz_plane')]:
+                like = param_map[name]
+                param_overrides[name] = fix_shape(recon_by_axis[ax].to(like.device, like.dtype), like)
+
+            merged = {**param_map, **param_overrides}
+            # Render with the corrupted planes (no grads)
+            ret_frame = torch.nn.utils.stateless.functional_call(
+                dvgo,
+                merged | buffer_map,
+                (rays_o, rays_d, viewdirs),
+                {'shared_rgbnet': self.rgbnet, 'global_step': global_step, 'mode': mode, **render_kwargs}
+            )
+
+            # Average bits over the three planes (standard bits definition)
+            total_bits = sum(bits_by_axis.values())
+
+        return ret_frame, total_bits, psnr_by_axis, bitstreams_by_axis
+
 
 
     # def forward(self, rays_o, rays_d, viewdirs, frame_ids, global_step=None, mode='feat', **render_kwargs):
