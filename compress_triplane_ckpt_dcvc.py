@@ -17,6 +17,7 @@ from src.models.dcvc_codec import DCVCImageCodec
 """
 Usage:
 python compress_triplane_ckpt_dcvc.py --src_ckpt logs/out_triplane/flame_steak_image/fine_last_0.tar --dst_dir logs/out_triplane/flame_steak_image/dcvc_qp0 --qp 0 --save_json
+python compress_triplane_ckpt_dcvc.py --src_ckpt logs/out_triplane/flame_steak_image_dcvc_qp24_dens/fine_last_0.tar --dst_dir logs/out_triplane/flame_steak_image_dcvc_qp24_dens/dcvc_qp24 --qp 24 --save_json
 """
 
 # ===============================================================

@@ -16,7 +16,9 @@ from TeTriRF.lib import utils
 DCVC_ALIGN = 32
 
 class DCVCImageCodec(torch.nn.Module):
-
+    ###
+    # NOTE: infer mode? density map?
+    ###
     def __init__(
             self, cfg_dcvc, device, force_zero_thres=0.12, infer_mode=False
     ):
@@ -87,7 +89,7 @@ class DCVCImageCodec(torch.nn.Module):
                 x_hat_half = result['x_hat'][..., :H2p, :W2p]
             else:
                 enc_result = self.codec_wrapper.compress(y_half, self.qp)
-                bits = self.codec_wrapper.measure_size(enc_result, self.qp)
+                # bits = self.codec_wrapper.measure_size(enc_result, self.qp)
                 dec_result  = self.codec_wrapper.decompress(enc_result)
                 x_hat_half = dec_result[..., :H2p, :W2p]
 
@@ -117,7 +119,62 @@ class DCVCImageCodec(torch.nn.Module):
         if not self.infer_mode:
             return recon, result['bpp'], plane_psnr
         else:
-            recon, bits, plane_psnr, enc_result['bit_stream']
+            recon, enc_result['bpp'], plane_psnr
+
+    def forward_density(self, density_1x1: torch.Tensor):
+        """
+        Training-time density path (differentiable proxy).
+        Input : [1,1,Dy,Dx,Dz] fp32
+        Return: (recon_density [1,1,Dy,Dx,Dz] fp32, bpp_tensor, psnr_tensor)
+        """
+        assert density_1x1.dim() == 5 and density_1x1.shape[0] == 1 and density_1x1.shape[1] == 1
+        _, _, Dy, Dx, Dz = density_1x1.shape
+
+        # Map to [0,1], pack as mono canvas, then 3ch by repetition
+        d01 = _dens_to01(density_1x1)                # [1,1,Dy,Dx,Dz]
+        d01_chw = d01.view(1, Dy, Dx, Dz)                 # [1,C,H,W] with C=Dy,H=Dx,W=Dz
+        mono, (Hc, Wc) = _tile_1xCHW(d01_chw)        # [Hc,Wc]
+        y = mono.unsqueeze(0).repeat(3, 1, 1).unsqueeze(0)# [1,3,Hc,Wc]
+
+        # Align to DCVC stride
+        pad_h = (self.align - Hc % self.align) % self.align
+        pad_w = (self.align - Wc % self.align) % self.align
+        y_pad = F.pad(y, (0, pad_w, 0, pad_h), mode="replicate").to(self.device)
+
+        # AMP + training proxy (same as planes)
+        y_half = y_pad.to(torch.float16).contiguous(memory_format=torch.channels_last)
+        with torch.cuda.amp.autocast(enabled=self.use_amp, dtype=self.amp_dtype):
+            # training-time differentiable proxy path
+            if not self.infer_mode:
+                result = dcvc_image_codec_forward(
+                    y_half, self.qp, self.i_frame_net, device=self.device
+                )
+                x_hat_half = result['x_hat'][..., :Hc, :Wc]                 # [1,3,Hc,Wc]
+                bpp = result['bpp']
+            else:
+                # If you ever call this in inference mode, mirror the wrapper logic
+                enc = self.codec_wrapper.compress(y_half, self.qp)
+                dec = self.codec_wrapper.decompress(enc)
+                x_hat_half = dec[..., :Hc, :Wc]
+                # mimic training bpp for consistency (bits / padded pixels)
+                Hp, Wp = y_pad.shape[-2:]
+                bits = self.codec_wrapper.measure_size(enc, self.qp)
+                bpp = torch.tensor(float(bits) / float(Hp * Wp), device=y_pad.device, dtype=torch.float32)
+
+        x_hat = x_hat_half.to(torch.float32)
+
+        # Take one channel back to mono canvas (any of the three; they should match)
+        mono_rec = x_hat[:, 0].squeeze(0)                 # [Hc,Wc] fp32
+
+        # Untile → [1,C,H,W] → [1,1,Dy,Dx,Dz]
+        d01_rec_chw = _untile_to_1xCHW(mono_rec, Dy, Dx, Dz)   # [1,Dy,Dx,Dz]
+        d_rec = _dens_from01(d01_rec_chw).view(1, 1, Dy, Dx, Dz)
+
+        # PSNR in raw density domain (peak = 35)
+        mse = F.mse_loss(d_rec, density_1x1)
+        psnr = 10.0 * torch.log10((35.0 ** 2) / (mse + 1e-12))
+
+        return d_rec, bpp, psnr
 
 
 class DCVCImageCodecInfer(torch.nn.Module):
@@ -514,6 +571,66 @@ def _crop_from_align(x, orig_size):
     """
     H, W = orig_size
     return x[..., :H, :W]
+
+
+# ===== Density helpers (packing/unpacking) =====
+def _dens_to01(d: torch.Tensor) -> torch.Tensor:
+    # fixed global mapping used in your packer
+    return (d.clamp(-5.0, 30.0) + 5.0) / 35.0
+
+def _dens_from01(t01: torch.Tensor) -> torch.Tensor:
+    return t01 * 35.0 - 5.0
+
+def _choose_grid(n_tiles: int) -> tuple[int, int]:
+    """Pick a near-square (tiles_h, tiles_w) that fits n_tiles."""
+    tiles_w = int(math.ceil(math.sqrt(n_tiles)))
+    tiles_h = int(math.ceil(n_tiles / tiles_w))
+    return tiles_h, tiles_w
+
+def _pad_align_2d(y: torch.Tensor, align: int) -> tuple[torch.Tensor, tuple[int,int]]:
+    """Pad H,W to multiples of `align` with replicate. Return y_pad and (H_orig,W_orig)."""
+    _, _, h2, w2 = y.shape
+    pad_h = (align - h2 % align) % align
+    pad_w = (align - w2 % align) % align
+    y_pad = F.pad(y, (0, pad_w, 0, pad_h), mode='replicate')
+    return y_pad, (h2, w2)
+
+def _tile_1xCHW(feat: torch.Tensor):
+    """[1,C,H,W] -> mono canvas [Hc,Wc], row-wise."""
+    assert feat.dim() == 4 and feat.size(0) == 1
+    _, C, H, W = feat.shape
+    tiles_w = int(math.ceil(math.sqrt(C)))
+    tiles_h = int(math.ceil(C / tiles_w))
+    Hc, Wc = tiles_h * H, tiles_w * W
+    canvas = feat.new_zeros(Hc, Wc)
+    filled = 0
+    for r in range(tiles_h):
+        y = 0
+        for c in range(tiles_w):
+            if filled >= C:
+                break
+            canvas[r*H:(r+1)*H, y:y+W] = feat[0, filled]
+            y += W
+            filled += 1
+    return canvas, (Hc, Wc)
+
+def _untile_to_1xCHW(canvas: torch.Tensor, C: int, H: int, W: int) -> torch.Tensor:
+    """inverse of _tile_1xCHW"""
+    Hc, Wc = canvas.shape[-2:]
+    tiles_h = Hc // H
+    tiles_w = Wc // W
+    out = canvas.new_zeros(1, C, H, W)
+    filled = 0
+    for r in range(tiles_h):
+        y = 0
+        for c in range(tiles_w):
+            if filled >= C:
+                break
+            out[0, filled] = canvas[r*H:(r+1)*H, y:y+W]
+            y += W
+            filled += 1
+    return out
+
 
 
 # --- tiny togglers ------------------------------------------------------------

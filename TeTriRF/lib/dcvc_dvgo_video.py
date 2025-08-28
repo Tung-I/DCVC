@@ -55,6 +55,63 @@ class DCVC_DVGO_Video(torch.nn.Module):
         # (optional) snapshot of raw planes at cache time, for change detection
         self._codec_cache_rawsnap = {ax: None for ax in ('xy','xz','yz')}
 
+        # ---- NEW: density cache ----
+        self._dens_cache        = None   # [1,1,Dy,Dx,Dz] (detached)
+        self._dens_cache_bpp    = None   # scalar tensor
+        self._dens_cache_psnr   = None   # scalar tensor
+        self._dens_cache_rawsnap= None   # [1,1,Dy,Dx,Dz] (detached)
+
+    def forward(self, rays_o, rays_d, viewdirs, frame_ids, global_step=None, mode='feat', **render_kwargs):
+        frame_ids_unique = torch.unique(frame_ids, sorted=True).cpu().int().numpy().tolist()
+        assert len(frame_ids_unique) == 1, "Expect a single frame per batch"
+        frameid = frame_ids_unique[0]
+        dvgo = self.dvgos[str(frameid)]
+
+        # Refresh cache if needed (runs DCVC at most every K steps)
+        self._maybe_refresh_codec_cache(frameid, global_step)
+
+        # Build param overrides using STE from cache
+        param_map  = dict(dvgo.named_parameters())
+        buffer_map = dict(dvgo.named_buffers())
+
+        # build STE overrides
+        overrides = self._ste_overrides(frameid)
+
+        # **Robust merge**: place each override into the right dict (param vs buffer)
+        param_overrides  = {k: v for k, v in overrides.items() if k in param_map}
+        buffer_overrides = {k: v for k, v in overrides.items() if k in buffer_map}
+
+        merged_params  = {**param_map,  **param_overrides}
+        merged_buffers = {**buffer_map, **buffer_overrides}
+
+        # Render with functional_call
+        ret_frame = torch.nn.utils.stateless.functional_call(
+            dvgo,
+            {**merged_params, **merged_buffers},
+            (rays_o, rays_d, viewdirs),
+            {'shared_rgbnet': self.rgbnet, 'global_step': global_step, 'mode': mode, **render_kwargs}
+        )
+
+        # BPP reporting / weighting
+        bpps_planes = [self._codec_cache_bpp[ax] for ax in ('xy','xz','yz')]
+        # avg_bpp = sum(bpps_planes) / 3.0
+        avg_bpp = (sum(bpps_planes) + self._dens_cache_bpp) / 4.0
+
+        # Optionally apply bpp only on refresh steps (with or without scaling)
+        if self.bpp_mode != "hold":
+            is_refresh = (global_step is None) or (global_step == self._codec_cache_step)
+            if self.bpp_mode == "refresh_only":
+                avg_bpp = avg_bpp if is_refresh else avg_bpp * 0.0
+            elif self.bpp_mode == "scale_on_refresh":
+                # keep expected contribution similar: only on refresh, scaled by K
+                avg_bpp = (avg_bpp * self.codec_refresh_k) if is_refresh else avg_bpp * 0.0
+
+        # diagnostics
+        psnr_by_axis = {ax: self._codec_cache_psnr[ax] for ax in ('xy','xz','yz')}
+        psnr_by_axis['density'] = self._dens_cache_psnr
+        
+        return ret_frame, avg_bpp, psnr_by_axis
+
     def _gather_planes_one_frame(self, frameid):
         k0 = self.dvgos[str(frameid)].k0
         return {
@@ -62,6 +119,10 @@ class DCVC_DVGO_Video(torch.nn.Module):
             'xz': getattr(k0, 'xz_plane'),
             'yz': getattr(k0, 'yz_plane'),
         }
+    
+    def _gather_density_one_frame(self, frameid):
+        dvgo = self.dvgos[str(frameid)]
+        return getattr(dvgo.density, 'grid')
 
     def _encode_decode_one_frame(self, frameid):
         """Functional encode-decode that returns recon planes for THIS frame only, w/o mutation."""
@@ -98,46 +159,6 @@ class DCVC_DVGO_Video(torch.nn.Module):
 
         return recon_by_axis, bits_by_axis, psnr_by_axis, bitstreams_by_axis
 
-    def forward(self, rays_o, rays_d, viewdirs, frame_ids, global_step=None, mode='feat', **render_kwargs):
-        frame_ids_unique = torch.unique(frame_ids, sorted=True).cpu().int().numpy().tolist()
-        assert len(frame_ids_unique) == 1, "Expect a single frame per batch"
-        frameid = frame_ids_unique[0]
-        dvgo = self.dvgos[str(frameid)]
-
-        # Refresh cache if needed (runs DCVC at most every K steps)
-        self._maybe_refresh_codec_cache(frameid, global_step)
-
-        # Build param overrides using STE from cache
-        param_map  = dict(dvgo.named_parameters())
-        buffer_map = dict(dvgo.named_buffers())
-        param_overrides = self._ste_overrides(frameid)
-
-        # Render with functional_call
-        merged = {**param_map, **param_overrides}
-        ret_frame = torch.nn.utils.stateless.functional_call(
-            dvgo,
-            merged | buffer_map,
-            (rays_o, rays_d, viewdirs),
-            {'shared_rgbnet': self.rgbnet, 'global_step': global_step, 'mode': mode, **render_kwargs}
-        )
-
-        # BPP reporting / weighting
-        bpps = [self._codec_cache_bpp[ax] for ax in ('xy','xz','yz')]
-        avg_bpp = sum(bpps) / 3.0
-
-        # Optionally apply bpp only on refresh steps (with or without scaling)
-        if self.bpp_mode != "hold":
-            is_refresh = (global_step is None) or (global_step == self._codec_cache_step)
-            if self.bpp_mode == "refresh_only":
-                avg_bpp = avg_bpp if is_refresh else avg_bpp * 0.0
-            elif self.bpp_mode == "scale_on_refresh":
-                # keep expected contribution similar: only on refresh, scaled by K
-                avg_bpp = (avg_bpp * self.codec_refresh_k) if is_refresh else avg_bpp * 0.0
-
-        # pass through some diagnostics if useful
-        psnr_by_axis = {ax: self._codec_cache_psnr[ax] for ax in ('xy','xz','yz')}
-        return ret_frame, avg_bpp, psnr_by_axis
-
     def invalidate_codec_cache(self):
         self._codec_cache_step = -1
         for ax in ('xy','xz','yz'):
@@ -146,54 +167,74 @@ class DCVC_DVGO_Video(torch.nn.Module):
             self._codec_cache_psnr[ax] = None
             self._codec_cache_rawsnap[ax] = None
 
+        self._dens_cache         = None
+        self._dens_cache_bpp     = None
+        self._dens_cache_psnr    = None
+        self._dens_cache_rawsnap = None
+
+
     @torch.no_grad()
-    def _planes_changed_too_much(self, planes: dict) -> bool:
-        """Optional early refresh trigger based on relative L2 change."""
+    def _changed_too_much(self, cur: torch.Tensor, snap: torch.Tensor) -> bool:
+        if snap is None or (cur.shape != snap.shape):
+            return True
+        num = (cur - snap).float().pow(2).sum()
+        den = snap.float().pow(2).sum().clamp_min(1e-12)
+        rel = (num / den).sqrt()
+        return rel.item() > self.refresh_trigger_eps
+    
+    @torch.no_grad()
+    def _planes_or_density_changed(self, planes: dict, density: torch.Tensor) -> bool:
         if self.refresh_trigger_eps <= 0:
             return False
-        changed = False
+        # planes
         for ax, p in planes.items():
-            snap = self._codec_cache_rawsnap[ax]
-            if snap is None or snap.shape != p.shape:
+            if self._changed_too_much(p, self._codec_cache_rawsnap[ax]):
                 return True
-            num = (p - snap).float().pow(2).sum()
-            den = snap.float().pow(2).sum().clamp_min(1e-12)
-            rel = (num / den).sqrt()
-            if rel.item() > self.refresh_trigger_eps:
-                changed = True
-                break
-        return changed
+        # density
+        if self._changed_too_much(density, self._dens_cache_rawsnap):
+            return True
+        return False
 
     def _maybe_refresh_codec_cache(self, frameid, global_step):
-        """Run DCVC if cache is stale or invalid; store *detached* recons/bpp."""
-        planes = self._gather_planes_one_frame(frameid)  # params (1,C,H,W)
+        """Run DCVC if cache is stale; store *detached* recons/bpp for planes + density."""
+        planes  = self._gather_planes_one_frame(frameid)
+        density = self._gather_density_one_frame(frameid)
+
         need_refresh = (
             self._codec_cache_step < 0 or
             self.codec_refresh_k <= 1 or
             (global_step is not None and (global_step - self._codec_cache_step) >= self.codec_refresh_k) or
-            self._planes_changed_too_much(planes)
+            self._planes_or_density_changed(planes, density)
         )
         if not need_refresh:
-            return  # keep cache
+            return
 
-        # (Re)compute codec outputs and refresh cache
-        recon_by_axis = {}
-        bpp_by_axis   = {}
-        psnr_by_axis  = {}
+        # ---- feature planes ----
         for ax in ('xy','xz','yz'):
-            x = planes[ax]  # (1,C,H,W), fp32
-            recon, bpp, plane_psnr = self.codec(x)  # recon: fp32, same shape; differentiable
-            # Store detached cache; keep dtype/device
-            self._codec_cache[ax]      = recon.detach()
-            self._codec_cache_bpp[ax]  = bpp.detach() if torch.is_tensor(bpp) else torch.tensor(float(bpp), device=x.device)
-            self._codec_cache_psnr[ax] = plane_psnr.detach() if torch.is_tensor(plane_psnr) else torch.tensor(float(plane_psnr), device=x.device)
+            x = planes[ax]
+            recon, bpp, plane_psnr = self.codec(x)        # same as before
+            self._codec_cache[ax]       = recon.detach()
+            self._codec_cache_bpp[ax]   = (bpp.detach() if torch.is_tensor(bpp)
+                                           else torch.tensor(float(bpp), device=x.device))
+            self._codec_cache_psnr[ax]  = (plane_psnr.detach() if torch.is_tensor(plane_psnr)
+                                           else torch.tensor(float(plane_psnr), device=x.device))
             self._codec_cache_rawsnap[ax] = x.detach()
+
+        # ---- NEW: density grid ----
+        d = density
+        d_recon, d_bpp, d_psnr = self.codec.forward_density(d)
+        self._dens_cache          = d_recon.detach()
+        self._dens_cache_bpp      = d_bpp.detach() if torch.is_tensor(d_bpp) else torch.tensor(float(d_bpp), device=d.device)
+        self._dens_cache_psnr     = d_psnr.detach() if torch.is_tensor(d_psnr) else torch.tensor(float(d_psnr), device=d.device)
+        self._dens_cache_rawsnap  = d.detach()
 
         self._codec_cache_step = int(global_step if global_step is not None else 0)
 
     def _ste_overrides(self, frameid):
         """Build STE substituted planes for functional_call from cached recons."""
         planes = self._gather_planes_one_frame(frameid)
+        density = self._gather_density_one_frame(frameid)
+
         overrides = {}
         for ax, name in [('xy','k0.xy_plane'), ('xz','k0.xz_plane'), ('yz','k0.yz_plane')]:
             raw = planes[ax]                # (1,C,H,W) param
@@ -202,6 +243,12 @@ class DCVC_DVGO_Video(torch.nn.Module):
             # Straight-through estimator: forward==rec, grad wrt raw is identity
             ste = rec + (raw - raw.detach())
             overrides[name] = ste
+
+        assert self._dens_cache is not None, "Density cache empty—refresh first."
+        raw_d = density
+        rec_d = self._dens_cache
+        overrides['density.grid'] = rec_d + (raw_d - raw_d.detach())
+
         return overrides
 
     def infer(self, rays_o, rays_d, viewdirs, frame_ids, global_step=None, mode='feat', **render_kwargs):

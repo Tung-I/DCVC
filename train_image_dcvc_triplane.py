@@ -22,6 +22,9 @@ from mmengine.config import Config
 import wandb
 import math
 
+from src.utils.common import setup_unique_torch_extensions_dir
+setup_unique_torch_extensions_dir()
+
 from TeTriRF.lib.utils import debug_print_param_status
 from TeTriRF.lib import dvgo, dmpigo, dvgo_video, dcvc_dvgo_video, utils      # unchanged
 from TeTriRF.lib.load_data import load_data
@@ -315,7 +318,7 @@ class Trainer:
             if step % self.args.i_print == 0 or step == 1:
                 dt   = time.time() - self._tic
                 psnr = np.mean(self._psnr_buffer); self._psnr_buffer.clear()
-                tqdm.write(f'[step {step:6d}] loss {loss.item():.4e}  psnr {psnr:5.2f}_{plane_psnr_dict['xy']:5.2f}'
+                tqdm.write(f'[step {step:6d}] loss {loss.item():.4e}  psnr {psnr:5.2f}'
                            f'elapsed {dt/3600:02.0f}:{dt/60%60:02.0f}:{dt%60:02.0f}')
                 
                 # raise Exception("Stop here")
@@ -325,7 +328,7 @@ class Trainer:
                     "train/psnr": float(psnr),
                     "train/loss": float(loss.item()),
                     "train/xy_plane_psnr": float(plane_psnr_dict['xy']),
-                    # "train/xz_plane_psnr": float(plane_psnr_dict['xz']),
+                    "train/density_psnr": float(plane_psnr_dict['density']),
                     # "train/yz_plane_psnr": float(plane_psnr_dict['yz']),
                     "train/rec_loss": float(rec_loss.item()),
                     "train/bpp_loss": float(bpp_loss.item()),

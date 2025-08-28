@@ -4,10 +4,72 @@
 import json
 import os
 from unittest.mock import patch
+import os, uuid, shutil, time, errno, getpass, pathlib, subprocess, sys
 
 import torch
 from torch.nn.modules.utils import consume_prefix_in_state_dict_if_present
 import numpy as np
+
+
+def pick_local_baser() -> str:
+    return os.path.abspath("./.local_tmp")
+
+def cleanup_stale_locks(root):
+    p = pathlib.Path(root)
+    if p.exists():
+        for lock in p.rglob("lock"):
+            try: lock.unlink()
+            except Exception: pass
+
+def safe_import_eff_distloss(max_retries=4):
+    """
+    Try importing the package that triggers JIT build; on locking errors:
+    - clean locks
+    - switch to a fresh unique TORCH_EXTENSIONS_DIR
+    - retry with backoff
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            import torch_efficient_distloss  # noqa: F401
+            return
+        except OSError as e:
+            msg = str(e)
+            if "Stale file handle" in msg or getattr(e, "errno", None) in (116, errno.EIO, errno.ESTALE):
+                # rotate to a brand-new cache dir and try again
+                setup_unique_torch_extensions_dir(run_id=uuid.uuid4().hex[:8])
+                time.sleep(0.3 * attempt)  # small backoff
+                continue
+            raise
+        except Exception:
+            # Any other import failure—bubble up after 1 retry with new cache
+            if attempt == 1:
+                setup_unique_torch_extensions_dir(run_id=uuid.uuid4().hex[:8])
+                continue
+            raise
+
+def setup_unique_torch_extensions_dir(run_id=None, ref_cache=None):
+    """
+    - Creates a unique TORCH_EXTENSIONS_DIR to avoid lock contention across concurrent jobs.
+    - Optionally copies a prebuilt reference cache tree (if provided) to avoid recompile.
+    """
+    base = pick_local_base()
+    run_id = run_id or os.environ.get("RUN_ID") or uuid.uuid4().hex[:8]
+    ext_dir = os.path.join(base, f"torch_ext_{run_id}")
+    os.makedirs(ext_dir, exist_ok=True)
+    os.environ["TORCH_EXTENSIONS_DIR"] = ext_dir
+    # optional: keep TORCH_HOME here too
+    os.environ.setdefault("TORCH_HOME", os.path.join(ext_dir, "torch_home"))
+    if ref_cache and os.path.isdir(ref_cache):
+        try:
+            # Copy the whole tree once; cheap if on same FS (reflink) and prevents rebuilds.
+            shutil.copytree(ref_cache, ext_dir, dirs_exist_ok=True)
+        except Exception:
+            pass
+    # defensively remove any stale locks inside both the new and legacy locations
+    cleanup_stale_locks(ext_dir)
+    cleanup_stale_locks(os.path.expanduser("~/.cache/torch_extensions"))
+    return ext_dir
+
 
 
 def str2bool(v):

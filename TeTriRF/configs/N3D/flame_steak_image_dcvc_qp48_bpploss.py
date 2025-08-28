@@ -1,5 +1,5 @@
 _base_ = '../default.py'
-expname = 'flame_steak_image_dcvc_qp48_bpploss'
+expname = 'flame_steak_image_dcvc_qp48_dens'
 ckptname = 'flame_steak_image'
 wandbprojectname = 'canerf_flame_steak_image'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/out_triplane'

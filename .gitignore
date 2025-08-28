@@ -16,4 +16,5 @@ data/*
 TeTriRF/logs/*
 TeTriRF/results/*
 data/
-wandb/*
+wandb/
+.torch_extensions*
