@@ -1,6 +1,0 @@
-bitrate_Mbit,psnr_dB,qp,folder
-28.216768,31.144426,80,planeimg_00_00_tiling_global_qp80
-18.850768,30.362566,60,planeimg_00_00_tiling_global_qp60
-14.019304,29.405813,40,planeimg_00_00_tiling_global_qp40
-8.528088,27.265499,20,planeimg_00_00_tiling_global_qp20
-5.322192,24.979723,10,planeimg_00_00_tiling_global_qp10

@@ -4,12 +4,12 @@ Apply JPEG compression to packed TriPlane images and write back 16-bit PNGs
 exactly where `image2plane.py` expects them (non-DCVC path).
 
 Directory conventions (matching your packer + unpacker):
-- Base packed root: {root}/planeimg_{S:02d}_{N:02d}_{strategy}_{qmode}
+- Base packed root: {root}/planeimg_{S:02d}_{N:02d}_{packing_mode}_{qmode}
 - We read original 16b PNGs from the base structure and write decoded PNGs to
   sibling folders suffixed with `_qp{qp}` and filenames `..._decoded.png`.
 
 Supported strategies:
-  tiling      : {root}/{plane}/imXXXXX.png              -> {plane}_qp{qp}/imXXXXX_decoded.png
+  flatten      : {root}/{plane}/imXXXXX.png              -> {plane}_qp{qp}/imXXXXX_decoded.png
   separate    : {root}/{plane}/c{c}/imXXXXX.png         -> {plane}/c{c}_qp{qp}/imXXXXX_decoded.png
   grouped     : {root}/{plane}/stream{g}/imXXXXX.png    -> {plane}/stream{g}_qp{qp}/imXXXXX_decoded.png
   correlation : same as grouped (uses stored streams)
@@ -23,7 +23,7 @@ Notes:
 - `qp` here maps to OpenCV's IMWRITE_JPEG_QUALITY in [1..100] (higher = better).
 
 Example:
-    python jpeg_triplane_image_compress.py --logdir logs/out_triplane/flame_steak_image --startframe 0 --numframe 1 --strategy tiling --qmode global --qp 4
+    python jpeg_triplane_image_compress.py --logdir logs/out_triplane/flame_steak_image --startframe 0 --numframe 1 --packing_mode flatten --qmode global --qp 4
 """
 
 import os
@@ -100,7 +100,7 @@ def jpeg_roundtrip(img8: np.ndarray, quality: int, is_color: bool) -> np.ndarray
 
 # ------------------------------- Core logic ----------------------------------
 
-def compress_one_image(src_png: str, dst_png: str, is_color: bool, qp: int):
+def compress_one_image(src_png: str, dst_png: str, is_color: bool, qp: int, keep_3ch=True):
     """16b PNG -> JPEG(qp) -> 16b PNG (decoded)."""
     if not os.path.isfile(src_png):
         raise FileNotFoundError(src_png)
@@ -117,15 +117,22 @@ def compress_one_image(src_png: str, dst_png: str, is_color: bool, qp: int):
     # Convert back to 16-bit
     out16 = to_uint16_from_u8(dec8)
 
+    # if keep_3ch, check if out16 is one-channel; if so, replicate the channel
+    if keep_3ch and out16.ndim == 2:
+        out16 = np.stack([out16] * 3, axis=-1)
+
+    if keep_3ch:
+        assert out16.ndim == 3 and out16.shape[2] == 3, f"Expected 3-channel output, got shape {out16.shape}"    
+
     ensure_dir(os.path.dirname(dst_png))
     if not cv2.imwrite(dst_png, out16):
         raise RuntimeError(f"Failed to write: {dst_png}")
     
     return encoded_bits
 
-def process_tiling_or_flatfour(dec_root: str, out_root: str, plane_names: List[str], fid: int, qp: int, color: bool):
+def process_flatten(dec_root: str, out_root: str, plane_names: List[str], fid: int, qp: int, color: bool):
     """
-    tiling  : per-plane mono image
+    flatten  : per-plane mono image
     flatfour: per-plane color image
     """
     total_bits = 0
@@ -167,14 +174,14 @@ def process_grouped_like(dec_root: str, plane_names: List[str], fid: int, qp: in
             dst_img = os.path.join(dst_dir, f"im{fid + 1:05d}_decoded.png")
             compress_one_image(src_img, dst_img, is_color=True, qp=qp)
 
-def process_density(dec_root: str, out_root: str, fid: int, qp: int):
+def process_density(dec_root: str, out_root: str, fid: int, qp: int, is_color=False):
     dens_src_dir = os.path.join(dec_root, "density")
     if not os.path.isdir(dens_src_dir):
         return  # allow absence
     src_img = os.path.join(dens_src_dir, f"im{fid + 1:05d}.png")
     dst_dir = os.path.join(out_root, f"density")
     dst_img = os.path.join(dst_dir, f"im{fid + 1:05d}.png")
-    encoded_bits = compress_one_image(src_img, dst_img, is_color=False, qp=qp)
+    encoded_bits = compress_one_image(src_img, dst_img, is_color=is_color, qp=qp)
 
     return encoded_bits
 
@@ -187,7 +194,7 @@ def parse_args():
     p.add_argument("--logdir", required=True, help="Root of checkpoints & planeimg_*")
     p.add_argument("--startframe", type=int, default=0, help="Start frame id (inclusive)")
     p.add_argument("--numframe", type=int, default=1, help="Number of frames")
-    p.add_argument("--strategy", choices=["tiling", "separate", "grouped", "correlation", "flatfour"], required=True)
+    p.add_argument("--packing_mode", choices=["flatten", "separate", "grouped", "correlation", "flatfour"], required=True)
     p.add_argument("--qmode", choices=["global", "per_channel"], required=True)
     p.add_argument("--qp", type=int, default=40, help="JPEG quality [1..100]; higher = better")
     return p.parse_args()
@@ -197,8 +204,8 @@ def main():
 
     S = args.startframe
     N = args.startframe + args.numframe - 1
-    dec_root = os.path.join(args.logdir, f"planeimg_{S:02d}_{N:02d}_{args.strategy}_{args.qmode}")
-    out_root = os.path.join(args.logdir, f"planeimg_{S:02d}_{N:02d}_{args.strategy}_{args.qmode}_qp{args.qp}")
+    dec_root = os.path.join(args.logdir, f"planeimg_{S:02d}_{N:02d}_{args.packing_mode}_{args.qmode}")
+    out_root = os.path.join(args.logdir, f"planeimg_{S:02d}_{N:02d}_{args.packing_mode}_{args.qmode}_qp{args.qp}")
     os.makedirs(out_root, exist_ok=True)
     if not os.path.isdir(dec_root):
         raise FileNotFoundError(f"Packed planes not found: {dec_root}")
@@ -209,19 +216,19 @@ def main():
 
     grand_total_bits = 0
     for fid in range(args.startframe, args.startframe + args.numframe):
-        if args.strategy == "tiling":
-            grand_total_bits += process_tiling_or_flatfour(dec_root, out_root, plane_names, fid, args.qp, color=False)
-        elif args.strategy == "flatfour":
-            process_tiling_or_flatfour(dec_root, plane_names, fid, args.qp, color=True)
-        elif args.strategy == "separate":
+        if args.packing_mode == "flatten":
+            grand_total_bits += process_flatten(dec_root, out_root, plane_names, fid, args.qp, color=False) # Keep 3 channels for unpacking
+        elif args.packing_mode == "flatfour":
+            process_flatten(dec_root, plane_names, fid, args.qp, color=True)
+        elif args.packing_mode == "separate":
             process_separate(dec_root, plane_names, fid, args.qp)
-        elif args.strategy in ("grouped", "correlation"):
+        elif args.packing_mode in ("grouped", "correlation"):
             process_grouped_like(dec_root, plane_names, fid, args.qp)
         else:
-            raise ValueError("Unknown strategy")
+            raise ValueError("Unknown packing_mode")
 
-        # density is written by your packer regardless of strategy; compress it too
-        grand_total_bits += process_density(dec_root, out_root, fid, args.qp)
+        # density is written by your packer regardless of packing_mode; compress it too
+        grand_total_bits += process_density(dec_root, out_root, fid, args.qp, is_color=False)  # keep 1 channel for unpacking
 
     # Write a single integer to encoded_bits.txt (total bits across all JPEGs)
     bits_path = os.path.join(out_root, "encoded_bits.txt")

@@ -1,0 +1,20 @@
+# JPEG compression
+
+python posthoc_plane_packer.py \
+       --logdir logs/out_triplane/flame_steak_image_jpeg_qp10 \
+              --numframe 1  --packing_mode flatten --qmode global
+
+python jpeg_triplane_image_compress.py \
+    --logdir logs/out_triplane/flame_steak_image_jpeg_qp10 \
+    --startframe 0 --numframe 1 --packing_mode flatten  \
+    --qmode global --qp 10
+
+python posthoc_plane_unpacker.py \ 
+    --logdir logs/out_triplane/flame_steak_image_jpeg_qp10 \ 
+    --numframe 1     --qp 10     --packing_mode flatten     --qmode global
+
+# JPEG compression baseline
+
+python render.py \
+    --config  TeTriRF/configs/N3D/flame_steak_image.py \
+    --frame_ids 0 --render_test --startframe 0 --numframe 1 --qp 80

@@ -1,6 +1,6 @@
-bitrate_Mbit,psnr_dB,qp,folder_or_label
-5.322192,24.979723,10,planeimg_00_00_tiling_global_qp10
-8.528088,27.265499,20,planeimg_00_00_tiling_global_qp20
-14.019304,29.405813,40,planeimg_00_00_tiling_global_qp40
-18.850768,30.362566,60,planeimg_00_00_tiling_global_qp60
-28.216768,31.144426,80,planeimg_00_00_tiling_global_qp80
+bitrate_Mbit,psnr_dB,qp,label_or_folder
+5.482272,25.039684,10,qp10
+8.681576,27.250431,20,qp20
+14.185432,29.354364,40,qp40
+19.01204,30.269478,60,qp60
+28.40112,31.128578,80,qp80

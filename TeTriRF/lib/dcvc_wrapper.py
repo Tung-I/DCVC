@@ -584,20 +584,6 @@ def _dens_to01(d: torch.Tensor) -> torch.Tensor:
 def _dens_from01(t01: torch.Tensor) -> torch.Tensor:
     return t01 * 35.0 - 5.0
 
-def _choose_grid(n_tiles: int) -> tuple[int, int]:
-    """Pick a near-square (tiles_h, tiles_w) that fits n_tiles."""
-    tiles_w = int(math.ceil(math.sqrt(n_tiles)))
-    tiles_h = int(math.ceil(n_tiles / tiles_w))
-    return tiles_h, tiles_w
-
-def _pad_align_2d(y: torch.Tensor, align: int) -> tuple[torch.Tensor, tuple[int,int]]:
-    """Pad H,W to multiples of `align` with replicate. Return y_pad and (H_orig,W_orig)."""
-    _, _, h2, w2 = y.shape
-    pad_h = (align - h2 % align) % align
-    pad_w = (align - w2 % align) % align
-    y_pad = F.pad(y, (0, pad_w, 0, pad_h), mode='replicate')
-    return y_pad, (h2, w2)
-
 def _tile_1xCHW(feat: torch.Tensor):
     """[1,C,H,W] -> mono canvas [Hc,Wc], row-wise."""
     assert feat.dim() == 4 and feat.size(0) == 1

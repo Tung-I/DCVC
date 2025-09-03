@@ -68,8 +68,8 @@ def config_parser():
     parser.add_argument("--reald", action='store_true', help='use compressed data or not, please do uncompression manully before use compressed data')
     parser.add_argument("--dcvc_dir", type=str, default=None, help='path to DCVC compressed ckpt')
     parser.add_argument("--qmode", type=str, default='global', choices=["global", "per_channel"])
-    parser.add_argument('--strategy', type=str, default='tiling', choices=['tiling', 'separate', 'grouped', 'correlation', 'flatfour'],
-                        help='tiling: original; separate: one channel per stream; grouped: RGB triplets + leftover')
+    parser.add_argument('--packing_mode', type=str, default='flatten', choices=['flatten', 'separate', 'grouped', 'correlation', 'flatfour'],
+                        help='flatten: original; separate: one channel per stream; grouped: RGB triplets + leftover')
     parser.add_argument("--aware", action='store_true', help='use compressed DCVC data or not')
     parser.add_argument("--qp", type=int, default=10)
     return parser
@@ -233,7 +233,7 @@ if __name__=='__main__':
     args.dump_images = True
     start_frame_id = args.startframe
     numframe = args.numframe
-    strategy = args.strategy
+    packing_mode = args.packing_mode
     S, N = args.startframe, args.startframe+args.numframe-1
     
     print("################################")
@@ -275,13 +275,16 @@ if __name__=='__main__':
             else:
                 qp = args.qp
                 testsavedir = os.path.join(cfg.basedir, cfg.expname, 
-                                            f"planeimg_{S:02d}_{N:02d}_{strategy}_{args.qmode}_qp{qp}",
+                                            f"planeimg_{S:02d}_{N:02d}_{packing_mode}_{args.qmode}_qp{qp}",
                                             f'render_test')
                 ckpt_path = os.path.join(cfg.basedir, cfg.expname, 
-                                            f"planeimg_{S:02d}_{N:02d}_{strategy}_{args.qmode}_qp{qp}", 
+                                            f"planeimg_{S:02d}_{N:02d}_{packing_mode}_{args.qmode}_qp{qp}", 
                                             f"fine_last_{frame_id}.tar")
                 rgbnet_file = os.path.join(cfg.basedir, cfg.expname, f'rgbnet.tar')
                
+        print('Loading from', ckpt_path)
+        print('Loading RGBNet from', rgbnet_file)
+        print('Saving to', testsavedir)
 
         # Load model
         ckpt_name = ckpt_path.split('/')[-1][:-4]
