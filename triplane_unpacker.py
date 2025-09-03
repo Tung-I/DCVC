@@ -25,10 +25,25 @@ import torch
 import torch.nn.functional as F
 import cv2
 from tqdm.auto import tqdm
+from einops import rearrange
 
 # -----------------------------------------------------------------------------
 
 NBITS = 2 ** 16 - 1
+
+def feat4d_to_dens5d(x: torch.Tensor, orient: str = "xz") -> torch.Tensor:
+    """
+    x: [1,C,H,W] per dens5d_to_feat4d; returns [1,1,Dy,Dx,Dz]
+    """
+    assert x.ndim == 5 and x.shape[0] == 1
+    if orient == "yx":
+        return rearrange(x, "b 1 Dz Dy Dx -> b 1 Dy Dx Dz")
+    elif orient == "yz":
+        return rearrange(x, "b 1 Dx Dy Dz -> b 1 Dy Dx Dz")
+    elif orient == "xz":
+        return rearrange(x, "b 1 Dy Dx Dz -> b 1 Dy Dx Dz")
+    else:
+        raise ValueError(f"Unknown orient={orient!r}")
 
 def untile_image(image: np.ndarray, h: int, w: int, ndim: int) -> torch.Tensor:
     """Inverse of tile_maker in the packer."""
@@ -61,6 +76,7 @@ def parse_args():
     p.add_argument("--strategy", choices=["tiling", "separate", "grouped", "correlation", "flatfour"], required=True)
     p.add_argument("--qmode", choices=["global", "per_channel"], required=True)
     p.add_argument("--dcvc", action="store_true", help="use compressed DCVC data or not")
+    p.add_argument("--orient", choices=["yx", "yz", "xz"], default="xz", help="orientation of the feature planes")
     return p.parse_args()
 
 # -----------------------------------------------------------------------------
@@ -87,6 +103,7 @@ def main():
 
     ckpt_template = torch.load(os.path.join(root, args.model_template), map_location="cpu", weights_only=False)
     dens_shape = ckpt_template["model_state_dict"]["density.grid"].shape  # [1,1,Dy,Dx,Dz]
+    Dy, Dx, Dz = dens_shape[2], dens_shape[3], dens_shape[4]
 
     # ---------------------------------------------------------------------
     # iterate over frames
@@ -186,10 +203,12 @@ def main():
         dens_folder = os.path.join(out_root, "density")
         img_name = f"im{fid + 1:05d}.png"
         img = cv2.imread(os.path.join(dens_folder, img_name), -1)
-        d = untile_image(img.astype(np.float32) / nbits, dens_shape[2], dens_shape[4], dens_shape[3])
+        feat = untile_image(img.astype(np.float32) / NBITS, h=Dy, w=Dx, ndim=Dz)  # [1,Dz,Dy,Dx]
+        feat = feat.unsqueeze(0)
         # undo density quantisation
-        d = d * 35.0 - 5.0
-        ckpt_cur["model_state_dict"]["density.grid"] = d.clone().unsqueeze(0)
+        feat = feat * 35.0 - 5.0
+        d5 = feat4d_to_dens5d(feat, orient=args.orient)     
+        ckpt_cur["model_state_dict"]["density.grid"] = d5.clone()
 
         # save restored checkpoint
         torch.save(ckpt_cur, os.path.join(out_root, f"fine_last_{fid}.tar"))

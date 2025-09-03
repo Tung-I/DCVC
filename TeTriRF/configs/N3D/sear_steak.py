@@ -1,5 +1,7 @@
 _base_ = '../default.py'
-expname = 'sear_steak'
+expname = 'sear_steak_image'
+ckptname = None
+wandbprojectname = 'canerf_sear_steak_image'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/out_triplane'
 
 data = dict(
@@ -16,9 +18,9 @@ fine_model_and_render = dict(
 	num_voxels=210**3,
 	num_voxels_base=210**3,
 	k0_type='PlaneGrid',
-	rgbnet_dim=30,
+	rgbnet_dim=36,
     rgbnet_width=128,
-    mpi_depth=280,
+    mpi_depth=256,
 	stepsize=1,
 	fast_color_thres = 1.0/256.0/80,
     viewbase_pe = 2,
@@ -35,7 +37,7 @@ fine_train = dict(
     tv_before=25000,                  # count total variation before the given number of iterations
     tv_dense_before=25000,            # count total variation densely before the given number of iterations
     weight_tv_density=1e-5,        # weight of total variation loss of density voxel grid
-	weight_tv_k0=1e-5,
+	weight_tv_k0=1e-4,
 	weight_l1_loss=0.01,
 	weight_distortion = 0.0015,
 	pg_scale=[2000*_k,3500*_k, 5000*_k, 6000*_k],
@@ -45,6 +47,8 @@ fine_train = dict(
     lrate_density=1e-1,           # lr of density voxel grid
     lrate_k0=1e-1,                # lr of color/feature voxel grid
     lrate_rgbnet=1e-3,            # lr of the mlp to preduct view-dependent color
+    save_every = 2000,          # save every save_every steps
+    save_after = 10000,          # save after save_after steps
 )
 
 coarse_train = dict(

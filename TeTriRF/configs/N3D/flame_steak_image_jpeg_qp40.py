@@ -1,5 +1,5 @@
 _base_ = '../default.py'
-expname = 'flame_steak_image_dcvc_qp12_refresh32'
+expname = 'flame_steak_image_jpeg_qp40'
 ckptname = 'flame_steak_image'
 wandbprojectname = 'canerf_flame_steak_image'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/out_triplane'
@@ -14,6 +14,7 @@ data = dict(
     test_frames = [0],
 	factor = 3,
 )
+
 fine_model_and_render = dict(
 	num_voxels=210**3,
 	num_voxels_base=210**3,
@@ -27,22 +28,35 @@ fine_model_and_render = dict(
     dynamic_rgbnet = True,
 )
 
-dcvc = dict(
-    ckpt_path = '/home/tungichen_umass_edu/DCVC/checkpoints/cvpr2025_image.pth.tar',
-    unet_pre_base = 32,             # UNet width
-    unet_post_base = 32,
-    use_sandwich = False,  
-    convert_ycbcr=True,
-    freeze_dcvc=True,
-    dcvc_qp = 12,
+# dcvc = dict(
+#     ckpt_path = '/home/tungichen_umass_edu/DCVC/checkpoints/cvpr2025_image.pth.tar',
+#     unet_pre_base = 32,             # UNet width
+#     unet_post_base = 32,
+#     use_sandwich = False,  
+#     convert_ycbcr=True,
+#     freeze_dcvc=True,
+#     dcvc_qp = 12,
+#     lambda_min = 1,
+#     lambda_max = 768,
+#     quant_mode = "global",
+#     global_range = (-20.0, 20.0),
+#     packing_mode = "mosaic",
+#     mlp_layers = 2,
+#     in_channels = 12,  # Number of input channels for the DCVC codec
+#     use_amp=True, 
+#     train_mode='e2e',
+# )
+
+jpeg = dict(
+    quality=40,                 # JPEG quality [1..100]
+    in_channels=12,             # tri-plane channels per plane
+    packing_mode="flatten",     # or "mosaic"
+    quant_mode="global",        # same as DCVC wrapper
+    global_range=(-20.0, 20.0), # for PSNR & de/normalization
     lambda_min = 1,
     lambda_max = 768,
-    quant_mode = "global",
-    global_range = (-20.0, 20.0),
-    packing_mode = "flatten",
-    mlp_layers = 2,
-    in_channels = 12,  # Number of input channels for the DCVC codec
-    use_amp=True
+    align=1,    
+    train_mode='ste'                # JPEG doesn't need alignment 
 )
 
 _k = 1

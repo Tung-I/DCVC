@@ -19,11 +19,11 @@ import time
 from torch.serialization import safe_globals
 from .dvgo_video import RGB_Net, RGB_SH_Net
 from .dcvc_wrapper import DCVCPlaneCodec, DCVCImageCodec, DCVCImageCodecInfer
+from .jpeg_wrapper import JPEGImageCodec
 
-
-class DCVC_DVGO_Video(torch.nn.Module):
+class STE_DVGO(torch.nn.Module):
     def __init__(self, frameids, xyz_min, xyz_max, cfg=None, device='cuda', infer_mode=False):
-        super(DCVC_DVGO_Video, self).__init__()
+        super(STE_DVGO, self).__init__()
 
         self.xyz_min = xyz_min
         self.xyz_max = xyz_max
@@ -38,10 +38,12 @@ class DCVC_DVGO_Video(torch.nn.Module):
         self.infer_mode = infer_mode
  
         if len(self.frameids) == 1:
-            in_channels = int(cfg.fine_model_and_render.rgbnet_dim / 3)
-            self.codec = DCVCImageCodec(
-                self.cfg.dcvc, device, infer_mode=infer_mode
-            )
+            if self.cfg.jpeg.quality is not None:
+                self.codec = JPEGImageCodec(self.cfg.jpeg, device=device, infer_mode=infer_mode)
+            elif self.cfg.dcvc.quality is not None:
+                self.codec = DCVCImageCodec(self.cfg.dcvc, device, infer_mode=infer_mode)
+            else: 
+                raise NotImplementedError("Only JPEG and DCVC codecs are supported.")
         else:
             raise RuntimeError("DCVCImageCodec only supports single frame input.")
           
@@ -543,81 +545,3 @@ class DCVC_DVGO_Video(torch.nn.Module):
     def _set_requires_grad_module(self, module: torch.nn.Module, flag: bool):
         for p in module.parameters(recurse=True):
             p.requires_grad_(flag)
-
-    def freeze_dvgo(self):
-        """
-        Freeze Tri-Plane parameters (per-frame dvgo modules). Optionally also freeze shared rgbnet.
-        Does NOT touch the codec sandwich (self.codec), so it stays trainable.
-        Recreate your optimizer after calling this.
-        """
-        # freeze all per-frame DVGO/MPIGO params (density & k0 grids, etc.)
-        for fid, m in self.dvgos.items():
-            self._set_requires_grad_module(m, False)
-        self.triplane_frozen = True
-
-        # # optionally freeze the shared RGB head
-        # if freeze_rgbnet and hasattr(self, "rgbnet") and self.rgbnet is not None:
-        #     self._set_requires_grad_module(self.rgbnet, False)
-        #     self.rgbnet_frozen = True
-        
-
-    def unfreeze_dvgo(self):
-        """
-        Unfreeze Tri-Plane parameters (per-frame dvgo modules). Optionally unfreeze shared rgbnet.
-        Codec stays trainable (or frozen, if you set it elsewhere).
-        Recreate your optimizer after calling this.
-        """
-        for fid, m in self.dvgos.items():
-            self._set_requires_grad_module(m, True)
-        self.triplane_frozen = False
-
-        # if unfreeze_rgbnet and hasattr(self, "rgbnet") and self.rgbnet is not None:
-        #     self._set_requires_grad_module(self.rgbnet, True)
-        #     self.rgbnet_frozen = False
-
-    
-
-#############################################
-    # def forward(self, rays_o, rays_d, viewdirs, frame_ids, global_step=None, mode='feat', **render_kwargs):
-    #     frame_ids_unique = torch.unique(frame_ids, sorted=True).cpu().int().numpy().tolist()
-    #     assert len(frame_ids_unique) == 1, "Expect a single frame per batch"
-    #     frameid = frame_ids_unique[0]
-    #     dvgo = self.dvgos[str(frameid)]
-
-    #     # 1) Get codec-distorted planes for THIS frame (no mutation)
-    #     recon_by_axis, bpp_by_axis, psnr_by_axis = self._encode_decode_one_frame(frameid)
-
-    #     # NOTE: To-do, Cache recon_detached for K−1 steps and use STE bypass:
-    #     # recon = recon_detached + (raw_planes - raw_planes.detach())
-
-    #     # 2) Build a temporary param override dict for functional_call
-    #     #    Names below assume parameters are registered as k0.xy_plane, etc.
-    #     param_map = dict(dvgo.named_parameters())
-    #     buffer_map = dict(dvgo.named_buffers())
-
-    #     # Ensure recon tensors are on the correct device/dtype and have the registered shape (1,C,H,W) if needed
-    #     def fix_shape(t, like):
-    #         # If your k0 planes are registered as (1,C,H,W), unsqueeze
-    #         return t.unsqueeze(0) if (like.dim()==4 and like.shape[0]==1 and t.dim()==3) else t
-
-    #     param_overrides = {}
-    #     for ax, name in [('xy','k0.xy_plane'), ('xz','k0.xz_plane'), ('yz','k0.yz_plane')]:
-    #         like = dict(dvgo.named_parameters())[name]
-    #         param_overrides[name] = fix_shape(recon_by_axis[ax].to(like.device, like.dtype), like)
-
-    #     # NOTE: do NOT .data assign. Just override for this call:
-    #     merged = {**param_map, **param_overrides}
-    #     # 3) Call dvgo forward "as if" those params were the module's parameters
-    #     ret_frame = functional_call(
-    #         dvgo,
-    #         merged | buffer_map,  
-    #         (rays_o, rays_d, viewdirs),
-    #         {'shared_rgbnet': self.rgbnet, 'global_step': global_step, 'mode': mode, **render_kwargs}
-    #     )
-
-    #     avg_bpp = 0.
-    #     for ax in ('xy','xz','yz'):
-    #         avg_bpp += bpp_by_axis[ax]
-    #     avg_bpp /= 3.0   # NOTE: Change this when considering density grid
-
-    #     return ret_frame, avg_bpp, psnr_by_axis

@@ -21,10 +21,10 @@ Usage example
 -------------
 ```
 python triplane_packer.py \
-    --logdir logs/out_triplane/coffee_martini \
-    --numframe 20 \
+    --logdir logs/out_triplane/flame_steak_image_jpeg_qp10 \
+    --numframe 1 \
     --strategy tiling \
-    --qmode per_channel
+    --qmode global
 ```
 
 python triplane_packer.py --logdir logs/out_triplane/flame_steak_image --numframe 1 --startframe 0 --strategy tiling --qmode global
@@ -39,6 +39,7 @@ import torch
 import torch.nn.functional as F
 import cv2
 from tqdm import tqdm
+from einops import rearrange
 
 # -----------------------------------------------------------------------------
 # helpers
@@ -47,6 +48,26 @@ from tqdm import tqdm
 to8b  = lambda x: (255 * np.clip(x, 0, 1)).astype(np.uint8)
 _to16 = lambda x: ((2 ** 16 - 1) * np.clip(x, 0, 1)).astype(np.uint16)
 
+
+def dens5d_to_feat4d(d5: torch.Tensor, orient: str = "xz") -> torch.Tensor:
+    """
+    d5: [1,1,Dy,Dx,Dz]
+    orient:
+      "yx" -> image H,W = (Dy,Dx), channels = Dz
+      "yz" -> image H,W = (Dy,Dz), channels = Dx
+      "xz" -> image H,W = (Dx,Dz), channels = Dy
+    returns feat4d: [1,C,H,W]
+    """
+    assert d5.ndim == 5 and d5.shape[0] == 1 and d5.shape[1] == 1, "expect [1,1,Dy,Dx,Dz]"
+    _, _, Dy, Dx, Dz = d5.shape
+    if orient == "yx":
+        return rearrange(d5, "b c Dy Dx Dz -> b c Dz Dy Dx")
+    elif orient == "yz":
+        return rearrange(d5, "b c Dy Dx Dz -> b c Dx Dy Dz")
+    elif orient == "xz":
+        return rearrange(d5, "b c Dy Dx Dz -> b c Dy Dx Dz")
+    else:
+        raise ValueError(f"Unknown orient={orient!r}")
 
 def tile_maker(feat_plane: torch.Tensor, h: int = 2560, w: int = 2560) -> torch.Tensor:
     """Pack C feature maps of size H×W into a single canvas of size *h×w*.
@@ -76,9 +97,15 @@ def density_quantize(density: torch.Tensor, nbits: int) -> torch.Tensor:
     return data
 
 
-def make_density_image(density_grid: torch.Tensor, nbits: int, h: int = 2560, w: int = 4096) -> torch.Tensor:
-    data = density_quantize(density_grid, nbits)
-    return tile_maker(data[0], h=h, w=w)
+def make_density_image(density_grid: torch.Tensor, nbits: int, h: int = 2560, w: int = 4096,
+                       orient: str = "xz") -> torch.Tensor:
+    """
+    density_grid: [1,1,Dy,Dx,Dz] in raw domain
+    returns mono canvas [h,w] (quantized to [0,1] float before writer casts to uint16)
+    """
+    data = density_quantize(density_grid, nbits)         # still [1,1,Dy,Dx,Dz] in [0,1]
+    feat = dens5d_to_feat4d(data, orient=orient)[0]         # -> [1, C, H, W] with H=y, W=x
+    return tile_maker(feat, h=h, w=w)                    # tile C=depth into rows
 
 # -----------------------------------------------------------------------------
 # correlation‑based grouping
@@ -144,11 +171,12 @@ def parse_args():
     p.add_argument("--numframe", type=int, default=20, help="number of frames to convert")
     p.add_argument("--startframe", type=int, default=0, help="start frame id (inclusive)")
     p.add_argument("--strategy", type=str, default="tiling",
-                   choices=["tiling", "separate", "grouped", "correlation", "flatfour"],
+                   choices=["tiling", "separate", "grouped", "correlation", "mosaic"],
                    help="packing strategy")
     p.add_argument("--qmode", type=str, default="global", choices=["global", "per_channel"],
                    help="quantisation mode")
     p.add_argument("--codec", type=str, default="h265", help="placeholder – not used here")
+    p.add_argument("--orient", choices=["yx", "yz", "xz"], default="xz", help="orientation of the feature planes")
     return p.parse_args()
 
 
@@ -274,7 +302,7 @@ def main():
         ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
 
         # ---------------- density grid → mask ----------------
-        density = ckpt["model_state_dict"]["density.grid"].clone()
+        density = ckpt["model_state_dict"]["density.grid"].clone() # torch.Size([1, 1, 181, 181, 280])
         voxel_size_ratio = ckpt["model_kwargs"]["voxel_size_ratio"]
 
         masks = None
@@ -346,13 +374,13 @@ def main():
                     bgr = np.stack([triplet[2], triplet[1], triplet[0]], axis=-1)
                     cv2.imwrite(os.path.join(stream_dir, f"im{frameid + 1:05d}.png"), _to16(bgr))
 
-            elif args.strategy == "flatfour":
+            elif args.strategy == "mosaic":
                 # ───────────────  “flat-4-to-1”  ───────────────
                 #   • 12-channel feature volume → single RGB image
                 #   • Every 4 channels are tiled into one 2×2 mono image,
                 #     giving three such mono images → mapped to B,G,R.
                 # ------------------------------------------------
-                assert C == 12 and C % 4 == 0, "flatfour expects exactly 12 channels"
+                assert C == 12 and C % 4 == 0, "mosaic expects exactly 12 channels"
 
                 os.makedirs(base_dir, exist_ok=True)
                 H2, W2 = H * 2, W * 2      # canvas for 4-way tiling
@@ -369,7 +397,7 @@ def main():
                             _to16(bgr))
 
         # ---------------- density plane ----------------
-        dens_img = make_density_image(density, 16)
+        dens_img = make_density_image(density, 16, orient=args.orient)
         dens_dir = os.path.join(out_root, "density")
         os.makedirs(dens_dir, exist_ok=True)
         cv2.imwrite(os.path.join(dens_dir, f"im{frameid + 1:05d}.png"), _to16(dens_img.cpu().numpy()))

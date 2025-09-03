@@ -16,9 +16,12 @@ from TeTriRF.lib import utils
 DCVC_ALIGN = 32
 
 class DCVCImageCodec(torch.nn.Module):
-    ###
-    # NOTE: infer mode? density map?
-    ###
+    '''
+    Autograd: 
+        - Calling the codec in .eval() mode does not disable gradients; 
+        - it only toggles internal behaviors like dropout/batchnorm. 
+        - Avoid torch.no_grad() around the codec if you want gradients.
+    '''
     def __init__(
             self, cfg_dcvc, device, force_zero_thres=0.12, infer_mode=False
     ):

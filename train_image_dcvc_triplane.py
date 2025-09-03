@@ -23,10 +23,12 @@ import wandb
 import math
 
 from src.utils.common import setup_unique_torch_extensions_dir
-setup_unique_torch_extensions_dir()
+# setup_unique_torch_extensions_dir()
 
 from TeTriRF.lib.utils import debug_print_param_status
 from TeTriRF.lib import dvgo, dmpigo, dvgo_video, dcvc_dvgo_video, utils      # unchanged
+from TeTriRF.lib.dcvc_dvgo_e2e import DCVC_DVGO_E2E
+from TeTriRF.lib.ste_dvgo import STE_DVGO
 from TeTriRF.lib.load_data import load_data
 from torch_efficient_distloss import flatten_eff_distloss
 from TeTriRF.lib.dcvc_wrapper import collect_trainable_iframe_params, collect_trainable_sandwich_params
@@ -115,7 +117,7 @@ class Trainer:
         # raise Exception
     
         self._build_rays()
-        self.lambda_bpp = self.qp_to_lambda(self.cfg.dcvc.dcvc_qp)
+        self.lambda_bpp = self.qp_to_lambda()
         """
         # for _qp in [0, 12, 24, 48]:
         #     print(f"lambda_bpp[{_qp}] = {self.qp_to_lambda(_qp)}")
@@ -134,14 +136,22 @@ class Trainer:
         xyz_max = torch.tensor(self.cfg.data.xyz_max)
         ids      = torch.unique(self.data['frame_ids']).cpu().tolist()
        
-        self.model = dcvc_dvgo_video.DCVC_DVGO_Video(
-            ids, xyz_min, xyz_max, self.cfg
-        ).to(self.device)
-
+        if self.cfg.dcvc.train_mode == 'ste':
+            self.model = dcvc_dvgo_video.DCVC_DVGO_Video(ids, xyz_min, xyz_max, self.cfg).to(self.device)
+        elif self.cfg.jpeg.train_mode == 'ste':
+            self.model = STE_DVGO(ids, xyz_min, xyz_max, self.cfg).to(self.device)
+        elif self.cfg.dcvc.train_mode == 'e2e':
+            self.model = DCVC_DVGO_E2E(ids, xyz_min, xyz_max, self.cfg).to(self.device)
+        else:
+            raise NotImplementedError(f"train_mode {self.cfg.dcvc.train_mode} not implemented")
+        
         if self.cfg.ckptname:
             _ = self.model.load_checkpoints()
 
-        codecs_params = collect_trainable_iframe_params(self.model.codec.i_frame_net)
+        if self.cfg.dcvc.dcvc_qp is not None:
+            codecs_params = collect_trainable_iframe_params(self.model.codec.i_frame_net)
+        else:
+            codecs_params = None
 
         # if self.cfg.fine_model_and_render.sandwich:
         #     sandwich_params = collect_trainable_sandwich_params(self.model.codec)
@@ -225,12 +235,19 @@ class Trainer:
                 self.model.dvgos[fid].act_shift -= cfg_t.decay_after_scale / (2 if step in cfg_t.pg_scale2 else 1)
             torch.cuda.empty_cache()
 
-    def qp_to_lambda(self, qp):
-        lambda_val = math.log(self.cfg.dcvc.lambda_min) + qp / (64 - 1) * (
-                math.log(self.cfg.dcvc.lambda_max) - math.log(self.cfg.dcvc.lambda_min))
-        lambda_val = math.pow(math.e, lambda_val)
-
-        # lambda_val = 0.
+    def qp_to_lambda(self):
+        if self.cfg.dcvc.dcvc_qp:
+            qp = self.cfg.dcvc.dcvc_qp
+            lambda_val = math.log(self.cfg.dcvc.lambda_min) + qp / (64 - 1) * (
+                    math.log(self.cfg.dcvc.lambda_max) - math.log(self.cfg.dcvc.lambda_min))
+            lambda_val = math.pow(math.e, lambda_val)
+        elif self.cfg.jpeg.quality:
+            qp = self.cfg.jpeg.quality
+            lambda_val = math.log(self.cfg.jpeg.lambda_min) + qp / (100 - 1) * (
+                    math.log(self.cfg.jpeg.lambda_max) - math.log(self.cfg.jpeg.lambda_min))
+            lambda_val = math.pow(math.e, lambda_val)
+        else:
+            raise NotImplementedError("Only DCVC and JPEG codecs are supported.")
 
         return lambda_val
 

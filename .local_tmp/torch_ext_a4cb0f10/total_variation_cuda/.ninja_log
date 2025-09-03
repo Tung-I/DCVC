@@ -1,0 +1,4 @@
+# ninja log v5
+7	20497	1756415669695671441	total_variation.o	a2ea12f70de2a49e
+8	58203	1756415707371440584	total_variation_kernel.cuda.o	fd1e5bdac550a17f
+58220	58732	1756415707926291589	total_variation_cuda.so	d0dbaf18f27fd41e

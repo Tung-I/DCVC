@@ -11,7 +11,7 @@ from torch.nn.modules.utils import consume_prefix_in_state_dict_if_present
 import numpy as np
 
 
-def pick_local_baser() -> str:
+def pick_local_base() -> str:
     return os.path.abspath("./.local_tmp")
 
 def cleanup_stale_locks(root):

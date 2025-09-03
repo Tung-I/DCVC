@@ -131,7 +131,20 @@ dcvc = dict(
     packing_mode = None,
     mlp_layers = None,
     in_channels = None,  # Number of input channels for the DCVC codec
-    use_amp = None
+    use_amp = None, 
+    train_mode = None 
+)
+
+jpeg = dict(
+    quality=None,                 # JPEG quality [1..100]
+    in_channels=None,             # tri-plane channels per plane
+    packing_mode=None,     # or "mosaic"
+    quant_mode=None,        # same as DCVC wrapper
+    global_range=None, # for PSNR & de/normalization
+    align=None,                    # JPEG doesn't need alignment
+    train_mode=None,
+    lambda_min = None,
+    lambda_max = None,
 )
 
 fine_model_and_render = deepcopy(coarse_model_and_render)

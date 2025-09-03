@@ -23,7 +23,7 @@ Notes:
 - `qp` here maps to OpenCV's IMWRITE_JPEG_QUALITY in [1..100] (higher = better).
 
 Example:
-    python triplane_image_compress.py --logdir logs/out_triplane/flame_steak_image --startframe 0 --numframe 1 --strategy tiling --qmode global --qp 4
+    python jpeg_triplane_image_compress.py --logdir logs/out_triplane/flame_steak_image --startframe 0 --numframe 1 --strategy tiling --qmode global --qp 4
 """
 
 import os

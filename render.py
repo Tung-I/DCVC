@@ -23,6 +23,7 @@ import time
 """
 Usage:
     python render.py --config  TeTriRF/configs/N3D/flame_steak_image.py --frame_ids 0 --render_test --startframe 0 --numframe 1 
+    python render.py --config  TeTriRF/configs/N3D/sear_steak.py --frame_ids 0 --render_test --startframe 0 --numframe 1 --qp 10
 """
 
 def config_parser():
@@ -70,6 +71,7 @@ def config_parser():
     parser.add_argument('--strategy', type=str, default='tiling', choices=['tiling', 'separate', 'grouped', 'correlation', 'flatfour'],
                         help='tiling: original; separate: one channel per stream; grouped: RGB triplets + leftover')
     parser.add_argument("--aware", action='store_true', help='use compressed DCVC data or not')
+    parser.add_argument("--qp", type=int, default=10)
     return parser
 
 def seed_everything():
@@ -271,6 +273,7 @@ if __name__=='__main__':
                 testsavedir = os.path.join(cfg.basedir, cfg.expname, f"compressed_{qp}_fine_last_{frame_id}", 'render_test')
                 rgbnet_file = os.path.join(cfg.basedir, cfg.expname, f'rgbnet.tar')
             else:
+                qp = args.qp
                 testsavedir = os.path.join(cfg.basedir, cfg.expname, 
                                             f"planeimg_{S:02d}_{N:02d}_{strategy}_{args.qmode}_qp{qp}",
                                             f'render_test')
