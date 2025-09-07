@@ -205,7 +205,7 @@ def main():
     S = args.startframe
     N = args.startframe + args.numframe - 1
     dec_root = os.path.join(args.logdir, f"planeimg_{S:02d}_{N:02d}_{args.packing_mode}_{args.qmode}")
-    out_root = os.path.join(args.logdir, f"planeimg_{S:02d}_{N:02d}_{args.packing_mode}_{args.qmode}_qp{args.qp}")
+    out_root = os.path.join(args.logdir, f"planeimg_{S:02d}_{N:02d}_{args.packing_mode}_{args.qmode}_jpeg_qp{args.qp}")
     os.makedirs(out_root, exist_ok=True)
     if not os.path.isdir(dec_root):
         raise FileNotFoundError(f"Packed planes not found: {dec_root}")

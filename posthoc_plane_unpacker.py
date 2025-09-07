@@ -6,6 +6,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import cv2
+import copy
 from tqdm.auto import tqdm
 from einops import rearrange
 
@@ -24,7 +25,8 @@ python posthoc_plane_unpacker.py \
     --numframe 1 \
     --qp 10 \
     --packing_mode flatten \
-    --qmode global
+    --qmode global \
+    --codec jpeg
 """
 
 # -----------------------------------------------------------------------------
@@ -78,6 +80,7 @@ def parse_args():
     p.add_argument("--qmode", choices=["global", "per_channel"], required=True)
     p.add_argument("--dcvc", action="store_true", help="use compressed DCVC data or not")
     p.add_argument("--orient", choices=["yx", "yz", "xz"], default="xz", help="orientation of the feature planes")
+    p.add_argument("--codec", choices=["jpeg"], default=None, help="codec for image compression")
     return p.parse_args()
 
 # -----------------------------------------------------------------------------
@@ -90,7 +93,11 @@ def main():
 
     root = args.logdir.rstrip("/")
     meta_root = os.path.join(root, f"planeimg_{S:02d}_{N:02d}_{args.packing_mode}_{args.qmode}")
-    out_root = os.path.join(root, f"planeimg_{S:02d}_{N:02d}_{args.packing_mode}_{args.qmode}_qp{args.qp}")
+    out_root = os.path.join(root, f"planeimg_{S:02d}_{N:02d}_{args.packing_mode}_{args.qmode}_{args.codec}_qp{args.qp}")
+    print(f"[INFO] Loaded meta data from {meta_root}")
+    print(f"[INFO] Loaded ckpt template from {os.path.join(root, args.model_template)}")
+    print(f"[INFO] Load reconstructed images from {out_root}")
+    print(f"[INFO] Writing unpacked tensor planes to {out_root}")
 
     # ---------------------------------------------------------------------
     # load meta + template ckpt
@@ -109,12 +116,24 @@ def main():
     dens_shape = ckpt_template["model_state_dict"]["density.grid"].shape  # [1,1,Dy,Dx,Dz]
     Dy, Dx, Dz = dens_shape[2], dens_shape[3], dens_shape[4]
 
+    # Cleanup the template to avoid confusion
+    for plane_name, feat_shape in meta["plane_size"].items():
+        ckpt_template["model_state_dict"][f"k0.{plane_name}"] = torch.zeros(feat_shape)
+        ckpt_template["model_state_dict"]["density.grid"] = torch.zeros(1,1,Dy,Dx,Dz)
+
+
     # ---------------------------------------------------------------------
     # iterate over frames
     # ---------------------------------------------------------------------
     for frame_idx in tqdm(range(args.numframe)):
         fid = args.startframe + frame_idx
-        ckpt_cur = {**ckpt_template}
+        # ckpt_cur = {**ckpt_template} 
+        # Use deep copy: 
+        ckpt_cur = copy.deepcopy(ckpt_template)
+        
+        # Q: What is this {**ckpt_template} syntax?
+        # A: This syntax creates a shallow copy of the ckpt_template dictionary.
+
 
         # ------------------- restore feature planes -------------------
         for plane_name, feat_shape in meta["plane_size"].items():

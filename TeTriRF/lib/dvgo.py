@@ -657,7 +657,17 @@ def get_training_rays_flatten(rgb_tr_ori, train_poses, HW, Ks, ndc, inverse_y, f
     return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz
 
 def get_training_rays_multi_frame(rgb_tr_ori, train_poses, HW, Ks, ndc, inverse_y, flip_x, flip_y, frame_ids, model, masks, render_kwargs, flatten=False):
-    #print('get_training_rays_in_maskcache_sampling: start')
+    """
+    Given a frame id, 
+    Returns:
+        lists (one entry per view): each entry is the set of valid rays for that single view
+        rgb_tr: colors 
+        rays_o_tr: origins 
+        rays_d_tr: directions 
+        viewdirs_tr: unit view directions 
+        imsz: how many rays survived the mask
+        frame_ids_tr: all entries equal to the same frame id
+    """
     assert len(rgb_tr_ori) == len(train_poses) and len(rgb_tr_ori) == len(Ks) and len(rgb_tr_ori) == len(HW) and len(rgb_tr_ori)==len(frame_ids)
     CHUNK = 64
     DEVICE = rgb_tr_ori[0].device
@@ -686,7 +696,6 @@ def get_training_rays_multi_frame(rgb_tr_ori, train_poses, HW, Ks, ndc, inverse_
             mask = mask & (masks[ind][...,0]>0.5)
 
         n = mask.sum()
-        #print('mask percetage:', float(n)*100/mask.numel())
         rgb_tr.append(img[mask])
         rays_o_tr.append(rays_o[mask].to(DEVICE))
         rays_d_tr.append(rays_d[mask].to(DEVICE))
@@ -696,7 +705,6 @@ def get_training_rays_multi_frame(rgb_tr_ori, train_poses, HW, Ks, ndc, inverse_
 
 
     eps_time = time.time() - eps_time
-    #print('get_training_rays_in_maskcache_sampling: finish (eps time:', eps_time, 'sec)')
     return rgb_tr, rays_o_tr, rays_d_tr, viewdirs_tr, imsz, frame_ids_tr
 
 

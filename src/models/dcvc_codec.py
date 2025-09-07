@@ -7,7 +7,6 @@ import torchvision
 from typing import Dict, Optional, Literal, List, Tuple
 from fractions import Fraction
 
-# Import required modules from official DCVC
 from src.models.video_model import DMC
 from src.models.image_model import DMCI
 from src.layers.cuda_inference import replicate_pad
@@ -19,26 +18,18 @@ from src.utils.transforms import rgb2ycbcr, ycbcr2rgb, yuv_444_to_420
 class DCVCImageCodec:
     """DCVC Image Compression Codec for tensor inputs."""
 
-    def __init__(self, weight_path="./checkpoint/cvpr2025_image.pth.tar", device='cuda'):
-        """
-        Initialize the DCVC codec.
-
-        Args:
-            weight_path (str): Path to model weights
-            device (str): Device to run model on ('cuda' or 'cpu')
-        """
+    def __init__(self, weight_path="./checkpoint/cvpr2025_image.pth.tar",
+                  device='cuda', require_grad=False):
         self.device = device
-
-        # Load model
         self.model = DMCI()
         self.model.load_state_dict(get_state_dict(weight_path))
         self.model.update(0.12)
-        # self.model(None)
         self.model = self.model.to(device)
+        if not require_grad:
+            for param in self.model.parameters():
+                param.requires_grad_(False)
         self.model.eval()
-
-
-        print(f"Loaded DCVC image model from: {weight_path}")
+        self.model.half()
 
     def measure_size(self, encoded_dict, qp, sps=None, is_i_frame=True):
         """
@@ -71,7 +62,7 @@ class DCVCImageCodec:
 
         return bits
 
-    def compress(self, image_tensor, qp=32):
+    def compress(self, image_tensor, qp=None):
         """
         Compress an image tensor or video tensor frame by frame.
 

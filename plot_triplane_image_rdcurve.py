@@ -137,7 +137,7 @@ CURVES: List[Dict[str, Any]] = [
         "psnr": {"type": "file", "path": "render_test/0_psnr.txt"},
     },
     {
-        "name": "Neural Image Codec",
+        "name": "DCVC",
         "enabled": True,
         "kind": "mapping",
         "paths": set1,
@@ -146,7 +146,7 @@ CURVES: List[Dict[str, Any]] = [
         "psnr": {"type": "file", "path": "render_test/0_psnr.txt"},
     },
     {
-        "name": "Neural Image Codec + Our STE Training",
+        "name": "DCVC + Our STE Training",
         "enabled": True,
         "kind": "mapping",
         "paths": set2,  # label -> folder
@@ -278,9 +278,9 @@ def main():
         marker = markers[idx % len(markers)]
         plt.plot(x, y, marker=marker, linestyle="-", label=curve_name)
 
-    plt.xlabel("Bitrate (Mbit)")
-    plt.ylabel("PSNR (dB)")
-    plt.title("Rendering Quality (I-frame, one TriPlane)")
+    plt.xlabel("Bitrate (Mbit)", fontsize=14)
+    plt.ylabel("PSNR (dB)", fontsize=14)
+    plt.title("I-frame (one TriPlane)")
     plt.grid(True, linestyle="--", linewidth=0.6, alpha=0.65)
     plt.legend()
 

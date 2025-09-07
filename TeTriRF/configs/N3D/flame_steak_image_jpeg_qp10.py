@@ -87,7 +87,3 @@ fine_train = dict(
     bpp_mode = "hold",          # or "refresh_only" / "scale_on_refresh"
     refresh_trigger_eps = 0.0,  # e.g., 0.05 to refresh early if planes drift >5% L2
 )
-
-coarse_train = dict(
-    N_iters=0,
-)

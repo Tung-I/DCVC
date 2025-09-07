@@ -34,10 +34,9 @@ from torch_efficient_distloss import flatten_eff_distloss
 from TeTriRF.lib.dcvc_wrapper import collect_trainable_iframe_params, collect_trainable_sandwich_params
 
 WANDB=True
+
 """
 Usage:
-    python train_image_dcvc_triplane.py --config TeTriRF/configs/N3D/flame_steak_image_dcvc.py --frame_ids 0 --training_mode 1 --resume
-    python train_image_dcvc_triplane.py --config TeTriRF/configs/N3D/flame_steak_image_dcvc_sandwich.py --frame_ids 0  --resume
     python train_image_dcvc_triplane.py --config TeTriRF/configs/N3D/flame_steak_image_dcvc_qp48_resume.py --frame_ids 0 
 """
 
@@ -118,6 +117,7 @@ class Trainer:
     
         self._build_rays()
         self.lambda_bpp = self.qp_to_lambda()
+        
         """
         # for _qp in [0, 12, 24, 48]:
         #     print(f"lambda_bpp[{_qp}] = {self.qp_to_lambda(_qp)}")
@@ -283,15 +283,15 @@ class Trainer:
         loss = rec_loss + bpp_loss
         loss.backward()
 
-        # # Total-variation regularization on voxel grids
-        # cfg_train = self.cfg.fine_train
-        # if step<cfg_train.tv_before and step>cfg_train.tv_after and step%cfg_train.tv_every==0:
-        #     if cfg_train.weight_tv_density>0:
-        #         self.model.density_total_variation_add_grad(
-        #             cfg_train.weight_tv_density/len(ro), step<cfg_train.tv_dense_before, fid_b)
-        #     if cfg_train.weight_tv_k0>0:
-        #         self.model.k0_total_variation_add_grad(
-        #             cfg_train.weight_tv_k0/len(ro), step<cfg_train.tv_dense_before, fid_b)
+        # Total-variation regularization on voxel grids
+        cfg_train = self.cfg.fine_train
+        if step<cfg_train.tv_before and step>cfg_train.tv_after and step%cfg_train.tv_every==0:
+            if cfg_train.weight_tv_density>0:
+                self.model.density_total_variation_add_grad(
+                    cfg_train.weight_tv_density/len(ro), step<cfg_train.tv_dense_before, fid_b)
+            if cfg_train.weight_tv_k0>0:
+                self.model.k0_total_variation_add_grad(
+                    cfg_train.weight_tv_k0/len(ro), step<cfg_train.tv_dense_before, fid_b)
 
         self.optimizer.step()
         return loss, psnr_by_axis, avg_bpp, rec_loss, bpp_loss

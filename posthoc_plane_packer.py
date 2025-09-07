@@ -204,8 +204,9 @@ def quantise(feat: torch.Tensor, qmode: str, bounds_out: List[Tuple[float, float
 
 def main():
     args = parse_args()
-
     logdir = args.logdir.rstrip("/")
+    # print(logdir)
+    # raise Exception("stop")
 
     # ---------------------------------------------------------------------
     # Pre-scan: collect global min / max for every feature channel

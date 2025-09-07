@@ -15,7 +15,7 @@ import numpy as np
 from PIL import Image
 from src.models.video_net_dmc import DMC
 from src.models.priors import model_architectures as architectures
-from src.models.utils import get_padding_size
+from models.model_utils import get_padding_size
 from tqdm import tqdm
 from pytorch_msssim import ms_ssim
 

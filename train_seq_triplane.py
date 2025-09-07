@@ -1,12 +1,3 @@
-# run_multiframe_refactor.py
-# ──────────────────────────────────────────────────────────────────────────────
-"""End-to-end training script for TeTriRF (multi-frame).  Exactly reproduces the
-behaviour of the original `run_multiframe.py` but is easier to extend (e.g. to
-DCVC-integrated tri-planes, multi-GPU, AMP, etc.)."""
-
-# ------------------------------------------------------------------------------
-# 1. Imports & utils
-# ------------------------------------------------------------------------------
 from __future__ import annotations
 import os, time, copy, random, argparse
 from dataclasses import dataclass, field
@@ -24,6 +15,8 @@ import wandb
 from TeTriRF.lib import dvgo, dmpigo, dvgo_video, utils      # unchanged
 from TeTriRF.lib.load_data import load_data
 from torch_efficient_distloss import flatten_eff_distloss
+
+from src.data_loader.sampler import MultiBucketCycleSampler
 
 """
 Usage:
@@ -119,8 +112,6 @@ class Trainer:
         self.model = dvgo_video.DirectVoxGO_Video(ids, xyz_min, xyz_max, self.cfg).to(self.device)
         if self.cfg.ckptname:
             ret = self.model.load_checkpoints()
-            # self.model.dvgos['0'].reset_occupancy_cache()
-            # self.model.set_fixedframe(ret)         # identical to original side-effect
         if (not self.cfg.fine_model_and_render.dynamic_rgbnet
             and self.args.training_mode > 0):
             self.cfg.fine_train.lrate_rgbnet = 0
@@ -131,16 +122,11 @@ class Trainer:
     # Dataset → DataLoader
     # -------------------------------------------------------------------------
     def _build_rays(self):
-        """Collect rays exactly the same way the original script does ― keep the
-        six Python lists in memory and return an index-generator.  We still create
-        a dummy DataLoader so later refactor (multi-GPU, etc.) is easy, but we no
-        longer rely on a non-existent `get_by_indices()` method."""
         (self.rgb_l, self.ro_l, self.rd_l,
         self.vd_l, self.sz_l, self.fid_l,
         sampler_fn) = self._gather_training_rays()
 
-        self.batch_sampler = sampler_fn            # -> (camera_id , sel_idx)
-        # keep a DL in case you want to push the loop into torch.compile later
+        self.batch_sampler = sampler_fn
         from torch.utils.data import DataLoader
         class _Dummy(torch.utils.data.Dataset):
             def __len__(self): return 1
@@ -148,42 +134,46 @@ class Trainer:
         self.ray_loader = DataLoader(_Dummy(), batch_size=1)
 
     def _gather_training_rays(self, tmasks=None):
-        """Bit-for-bit port of the inline helper in run_multiframe.py."""
         cfg, data, model = self.cfg, self.data, self.model
-        HW, Ks, poses, frame_ids = data['HW'], data['Ks'], data['poses'], data['frame_ids']
-        uniq_ids = torch.unique(frame_ids, sorted=True).cpu().tolist()
-        device   = self.device                                 # == cuda
+        HW, Ks, poses, frame_ids_all = data['HW'], data['Ks'], data['poses'], data['frame_ids']
+        uniq_ids = torch.unique(frame_ids_all, sorted=True).cpu().tolist()
+        device   = self.device
 
         rgb_l, ro_l, rd_l, vd_l, imsz_l, fid_l = [], [], [], [], [], []
+
         for fid in uniq_ids:
             if fid in model.fixed_frame:
                 continue
-            mask     = (frame_ids == fid)[data['i_train']]
+            mask     = (frame_ids_all == fid)[data['i_train']]
             t_train  = np.array(data['i_train'])[mask]
-            rgb_ori  = data['images'][t_train].to('cpu' if cfg.data.load2gpu_on_the_fly
-                                                else device)
+            rgb_ori  = data['images'][t_train].to('cpu' if cfg.data.load2gpu_on_the_fly else device)
 
             pmasks = None
             if tmasks is not None:
-                pmasks = torch.from_numpy(tmasks[t_train]).to(
-                            'cpu' if cfg.data.load2gpu_on_the_fly else device)
+                pmasks = torch.from_numpy(tmasks[t_train]).to('cpu' if cfg.data.load2gpu_on_the_fly else device)
 
+            # e.g., ro is a list, ro[1] has a shape of [N_rays=609076, 3] 
             rgb, ro, rd, vd, imsz, fids = dvgo.get_training_rays_multi_frame(
                 rgb_tr_ori=rgb_ori,
                 train_poses=poses[t_train],
                 HW=HW[t_train], Ks=Ks[t_train],
                 ndc=cfg.data.ndc, inverse_y=cfg.data.inverse_y,
                 flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y,
-                frame_ids=frame_ids[t_train],
+                frame_ids=frame_ids_all[t_train],
                 model=model.dvgos[str(fid)],
-                masks=pmasks, render_kwargs={},             # same as original
+                masks=pmasks, render_kwargs={},
                 flatten=(cfg.fine_train.ray_sampler == 'flatten')
             )
             rgb_l+=rgb; ro_l+=ro; rd_l+=rd; vd_l+=vd; imsz_l+=imsz; fid_l+=fids
 
-        sampler = dvgo.batch_indices_generator_MF(rgb_l, cfg.fine_train.N_rand)
-        return rgb_l, ro_l, rd_l, vd_l, imsz_l, fid_l, lambda: next(sampler)
-
+        # len(rgb_l) =  n_frames * n_views
+        bucket_lengths = [len(x) for x in rgb_l]
+        BS = cfg.fine_train.N_rand
+        cycle_sampler = MultiBucketCycleSampler(bucket_lengths, BS, 
+                                                shuffle_across_buckets=False,
+                                                shuffle_within_bucket=True)
+        # the sampler returns lists (cam, idx)
+        return rgb_l, ro_l, rd_l, vd_l, imsz_l, fid_l, cycle_sampler
 
     # -------------------------------------------------------------------------
     # Training utilities
@@ -206,15 +196,20 @@ class Trainer:
     # Main step
     # -------------------------------------------------------------------------
     def _train_step(self, step: int):
-        cam, sel_np = self.batch_sampler()
-        sel = torch.from_numpy(sel_np)
+        bucket_ids, index_lists = self.batch_sampler()
+        rgb_chunks, ro_chunks, rd_chunks, vd_chunks, fid_chunks = [], [], [], [], []
+        for b, sel in zip(bucket_ids, index_lists):
+            rgb_chunks.append(self.rgb_l[b][sel])
+            ro_chunks.append(self.ro_l[b][sel])
+            rd_chunks.append(self.rd_l[b][sel])
+            vd_chunks.append(self.vd_l[b][sel])
+            fid_chunks.append(self.fid_l[b][sel])
 
-        # identical slicing to original script
-        target  = self.rgb_l[cam][sel]
-        ro      = self.ro_l[cam][sel]
-        rd      = self.rd_l[cam][sel]
-        vd      = self.vd_l[cam][sel]
-        fid_b   = self.fid_l[cam][sel]
+        target = torch.cat(rgb_chunks, dim=0)
+        ro     = torch.cat(ro_chunks,  dim=0)
+        rd     = torch.cat(rd_chunks,  dim=0)
+        vd     = torch.cat(vd_chunks,  dim=0)
+        fid_b  = torch.cat(fid_chunks, dim=0).long()
 
         if self.cfg.data.load2gpu_on_the_fly:
             to_dev = lambda x: x.to(self.device)

@@ -22,8 +22,8 @@ import time
 
 """
 Usage:
-    python render.py --config  TeTriRF/configs/N3D/flame_steak_image.py --frame_ids 0 --render_test --startframe 0 --numframe 1 
-    python render.py --config  TeTriRF/configs/N3D/sear_steak.py --frame_ids 0 --render_test --startframe 0 --numframe 1 --qp 10
+    python render.py --config  configs/dynerf_flame_steak/video.py --frame_ids 0 --render_train --startframe 0 --numframe 1 --reald --dump_images
+    python render.py --config  configs/dynerf_sear_steak/jpeg_qp0.py --frame_ids 0 --render_test --startframe 0 --numframe 1 --qp 0 --codec jpeg --codec-adapt --dump_images
 """
 
 def config_parser():
@@ -70,7 +70,8 @@ def config_parser():
     parser.add_argument("--qmode", type=str, default='global', choices=["global", "per_channel"])
     parser.add_argument('--packing_mode', type=str, default='flatten', choices=['flatten', 'separate', 'grouped', 'correlation', 'flatfour'],
                         help='flatten: original; separate: one channel per stream; grouped: RGB triplets + leftover')
-    parser.add_argument("--aware", action='store_true', help='use compressed DCVC data or not')
+    parser.add_argument("--codec-adapt", action='store_true', help='use codec-adapted training or not')
+    parser.add_argument("--posthoc", action='store_true', help='use post-hoc processing or not')
     parser.add_argument("--qp", type=int, default=10)
     return parser
 
@@ -127,8 +128,8 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
     curf = frame_id % len(render_poses) 
 
     for i, c2w in enumerate(tqdm(render_poses)):
-        if i != curf and ndc:
-            continue
+        # if i != curf and ndc:
+        #     continue
         H, W = HW[i]
         K = Ks[i]
         c2w = torch.Tensor(c2w)
@@ -268,23 +269,29 @@ if __name__=='__main__':
                 testsavedir = os.path.join(args.dcvc_dir, f'render_test')
                 ckpt_path = os.path.join(args.dcvc_dir, f"fine_last_{frame_id}.tar")
                 rgbnet_file = os.path.join(cfg.basedir, cfg.expname, f'rgbnet.tar')
-            elif args.aware:
-                ckpt_path = os.path.join(cfg.basedir, cfg.expname, f"compressed_{qp}_fine_last_{frame_id}.tar")
-                testsavedir = os.path.join(cfg.basedir, cfg.expname, f"compressed_{qp}_fine_last_{frame_id}", 'render_test')
+            elif args.codec_adapt or args.posthoc:
+                qp = args.qp
+                ckpt_path = os.path.join(cfg.basedir, cfg.expname, 
+                                            f"planeimg_{S:02d}_{N:02d}_{packing_mode}_{args.qmode}_{args.codec}_qp{qp}", 
+                                            f"fine_last_{frame_id}.tar")
+                testsavedir = os.path.join(cfg.basedir, cfg.expname, 
+                                            f"planeimg_{S:02d}_{N:02d}_{packing_mode}_{args.qmode}_{args.codec}_qp{qp}",
+                                            f'render_test')
                 rgbnet_file = os.path.join(cfg.basedir, cfg.expname, f'rgbnet.tar')
             else:
                 qp = args.qp
                 testsavedir = os.path.join(cfg.basedir, cfg.expname, 
-                                            f"planeimg_{S:02d}_{N:02d}_{packing_mode}_{args.qmode}_qp{qp}",
+                                            f"planeimg_{S:02d}_{N:02d}_{packing_mode}_{args.qmode}_{args.codec}_qp{qp}",
                                             f'render_test')
                 ckpt_path = os.path.join(cfg.basedir, cfg.expname, 
-                                            f"planeimg_{S:02d}_{N:02d}_{packing_mode}_{args.qmode}_qp{qp}", 
+                                            f"planeimg_{S:02d}_{N:02d}_{packing_mode}_{args.qmode}_{args.codec}_qp{qp}", 
                                             f"fine_last_{frame_id}.tar")
                 rgbnet_file = os.path.join(cfg.basedir, cfg.expname, f'rgbnet.tar')
                
         print('Loading from', ckpt_path)
         print('Loading RGBNet from', rgbnet_file)
         print('Saving to', testsavedir)
+        # raise Exception
 
         # Load model
         ckpt_name = ckpt_path.split('/')[-1][:-4]
