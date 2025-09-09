@@ -22,11 +22,11 @@ from TeTriRF.lib import dvgo, dvgo_video, dcvc_dvgo_video, utils      # unchange
 from TeTriRF.lib.load_data import load_data
 from torch_efficient_distloss import flatten_eff_distloss
 
-WANDB=True
+WANDB=False
 
 """
 Usage:
-    python train_codec_nerf_video.py --config configs/dynerf_flame_steak/dcvc_qp48.py --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 
+    python train_codec_nerf_video.py --config configs/dynerf_flame_steak/dcvc_qp48.py --frame_ids 0 1 2 3 4 5 6 7 8 9
 """
 
 def build_arg_parser() -> argparse.ArgumentParser:
@@ -203,7 +203,6 @@ class Trainer:
         # assert that only one of dcvc_qp and jpeg.quality is set
         dcvc_qp = self.cfg.codec.dcvc_qp
         quality = self.cfg.codec.quality
-        assert (dcvc_qp is None) != (quality is None)
         lambda_min = self.cfg.fine_train.lambda_min
         lambda_max = self.cfg.fine_train.lambda_max
 
@@ -218,7 +217,7 @@ class Trainer:
                     math.log(lambda_max) - math.log(lambda_min))
             lambda_val = math.pow(math.e, lambda_val)
         else:
-            raise NotImplementedError("Only DCVC and JPEG codecs are supported.")
+            lambda_val = 1.0
 
         return lambda_val
 

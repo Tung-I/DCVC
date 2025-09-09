@@ -2,6 +2,13 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+import io
+import numpy as np
+from typing import List, Optional
+from fractions import Fraction
+import cupy as cp
+import pycuda.driver as cuda
+import ctypes
 
 
 from src.utils.common import get_state_dict
@@ -18,6 +25,505 @@ from src.models.model_utils import (
     jpeg_roundtrip_color
 )
 import TeTriRF.lib.utils as tetrirf_utils
+import PyNvVideoCodec as nvc
+
+import av
+
+
+class PyNvVideoCodecWrapper(nn.Module):
+    """
+    NVENC/NVDEC (GPU) video codec via PyNvCodec (VPF).
+
+    CUDA path:
+      - normalize -> pack -> pad   (CUDA)
+      - encode/decode (NVENC/NVDEC, GPU surfaces)
+      - crop -> unpack -> denorm   (CUDA)
+    """
+
+    def __init__(self, cfg_codec, device: str = "cuda"):
+        super().__init__()
+        self.device       = torch.device(device)
+        self.in_channels  = int(cfg_codec.in_channels)
+        self.packing_mode = cfg_codec.packing_mode
+        self.align        = int(getattr(cfg_codec, "align", DCVC_ALIGN))
+        self.quant_mode   = cfg_codec.quant_mode
+        self.global_range = tuple(cfg_codec.global_range)
+
+        # NVENC knobs (safe defaults; tweak as needed)
+        self.gpu_id   = int(getattr(cfg_codec, "gpu_id", 0))
+        self.codec    = str(cfg_codec.nv_codec).lower()   # 'hevc' or 'av1' (if supported)
+        self.fps      = int(cfg_codec.fps)
+        self.gop      = int(cfg_codec.gop)
+        self.preset   = str(cfg_codec.nv_preset)
+        self.constqp  = int(cfg_codec.nv_constqp)
+        self.profile  = "main"  # could be a config option if needed
+
+        fmt = str(getattr(cfg_codec, "fmt", "ABGR")).upper()
+        if fmt not in {"NV12","YV12","IYUV","YUV444","YUV420_10BIT",
+                    "YUV444_10BIT","ARGB","ARGB10","ABGR","ABGR10",
+                    "NV16","P210"}:
+            raise ValueError(f"Unsupported fmt {fmt} for PyNvVideoCodec")
+        self.pix_fmt = fmt
+        
+        self._enc = None
+        self._dec = None
+        self._enc_w = self._enc_h = -1
+
+        # tensor helpers
+        self.pack_fn   = pack_planes_to_rgb
+        self.unpack_fn = unpack_rgb_to_planes
+        self._last_bits = 0
+
+    # ------------------------------ feature planes ------------------------------
+    @torch.no_grad()
+    def forward(self, frames: torch.Tensor):
+        """
+        frames: [T,C,H,W] float (any device). Returns recon [T,C,H,W] on input device.
+        """
+        assert frames.dim() == 4 and frames.shape[1] == self.in_channels
+        in_dev = frames.device
+        T, C, H, W = frames.shape
+
+        # CUDA pre-processing
+        x = frames.to(dtype=torch.float32, device=in_dev, non_blocking=True)
+        x01, c_min, scale = normalize_planes(x, mode=self.quant_mode, global_range=self.global_range)    # [T,C,H,W] CUDA
+        canv_pad, orig_size = self.pack_fn(x01, align=self.align, mode=self.packing_mode)                # [T,3,Hp,Wp] CUDA
+        H2, W2 = orig_size
+        Hp, Wp = canv_pad.shape[-2:]
+
+        # NVENC/NVDEC round-trip (GPU)
+        rec_canv = self._nv_roundtrip_rgb(canv_pad)    # [T,3,Hp,Wp] CUDA
+
+        # CUDA post-processing
+        rec_canv = rec_canv[..., :H2, :W2]                                                               # [T,3,H2,W2]
+        rec01    = self.unpack_fn(rec_canv, C, (H2, W2), mode=self.packing_mode)                         # [T,C,H,W]
+        recon    = (rec01 * scale + c_min).to(torch.float32)                                             # [T,C,H,W] CUDA
+
+        # metrics
+        bpp_val = self._last_bits / float(T * Hp * Wp)
+        bpp     = torch.tensor(bpp_val, device=in_dev, dtype=torch.float32)
+        if self.quant_mode == "global":
+            peak = float(self.global_range[1] - self.global_range[0])
+            psnr = tetrirf_utils.mse2psnr_with_peak(F.mse_loss(recon, x), peak=peak)
+        else:
+            raise NotImplementedError("Only 'global' quant_mode supported.")
+
+        return recon, bpp, psnr
+
+    # --------------------------------- density ----------------------------------
+    @torch.no_grad()
+    def forward_density(self, dens_seq: torch.Tensor):
+        """
+        dens_seq: [T,1,Dy,Dx,Dz] float (any device) -> recon same shape (on input device).
+        """
+        assert dens_seq.dim() == 5 and dens_seq.shape[1] == 1
+        in_dev = dens_seq.device
+        T, _, Dy, Dx, Dz = dens_seq.shape
+
+        # CUDA: map to [0,1], tile to canvases, pad
+        d   = dens_seq.to(dtype=torch.float32, device=in_dev, non_blocking=True)
+        d01 = dens_to01(d)                                                                               # [T,1,Dy,Dx,Dz] CUDA
+
+        mono_list = []
+        Hc = Wc = None
+        for t in range(T):
+            chw  = d01[t].view(1, Dy, Dx, Dz)                                                            # [1,C,H,W] CUDA
+            mono, (Hct, Wct) = tile_1xCHW(chw)                                                           # [Hc,Wc]  CUDA
+            if Hc is None:
+                Hc, Wc = Hct, Wct
+            mono_list.append(mono)
+        mono_stack = torch.stack(mono_list, dim=0)                                                       # [T,Hc,Wc] CUDA
+        canv       = mono_stack.unsqueeze(1).repeat(1, 3, 1, 1)                                          # [T,3,Hc,Wc] CUDA
+
+        pad_h = (self.align - Hc % self.align) % self.align
+        pad_w = (self.align - Wc % self.align) % self.align
+        canv_pad = F.pad(canv, (0, pad_w, 0, pad_h), mode="replicate")                                   # [T,3,Hp,Wp] CUDA
+        Hp, Wp = canv_pad.shape[-2:]
+
+        # NVENC/NVDEC round-trip (GPU)
+        rec_canv = self._nv_roundtrip_rgb(canv_pad)    # [T,3,Hp,Wp] CUDA
+        rec_canv = rec_canv[..., :Hc, :Wc]                                                               # [T,3,Hc,Wc]
+
+        # untile back
+        d01_recs = []
+        for t in range(T):
+            mono_rec = rec_canv[t, 0]                                                                    # [Hc,Wc] CUDA
+            rec_chw  = untile_to_1xCHW(mono_rec, Dy, Dx, Dz)                                             # [1,Dy,Dx,Dz] CUDA
+            d01_recs.append(rec_chw)
+        d01_rec = torch.stack(d01_recs, dim=0).view(T, 1, Dy, Dx, Dz)                                    # CUDA
+        d_rec   = dens_from01(d01_rec)                                                                   # CUDA
+
+        bpp_val = self._last_bits / float(T * Hp * Wp)
+        bpp     = torch.tensor(bpp_val, device=in_dev, dtype=torch.float32)
+        mse  = F.mse_loss(d_rec, d)
+        psnr = 10.0 * torch.log10((35.0 ** 2) / (mse + 1e-12))
+
+        return d_rec, bpp, psnr
+
+    # ------------------------------ NVENC/NVDEC core ------------------------------
+    def _ensure_codec(self, W: int, H: int):
+        if self._enc is not None and self._enc_w == W and self._enc_h == H:
+            return
+        self._enc = None; self._dec = None
+
+        codec_enum_map = {
+            'h264': nvc.cudaVideoCodec.H264,
+            'hevc': nvc.cudaVideoCodec.HEVC,
+            'av1' : nvc.cudaVideoCodec.AV1,
+        }
+        if self.codec not in codec_enum_map:
+            raise ValueError(f"Unsupported nv_codec '{self.codec}'")
+        codec_enum = codec_enum_map[self.codec]
+
+        enc_opts = {
+            "preset": str(self.preset),
+            "profile": str(self.profile),
+            "rc": "vbr",
+            "constqp": str(self.constqp),
+            "fps": str(self.fps),
+            "gop": str(self.gop),
+            "bf": "0", 
+            "b_adapt": "0",
+        }
+
+        # IMPORTANT: your build wants 'fmt', not 'format'
+        self._enc = nvc.CreateEncoder(
+            width=W,
+            height=H,
+            fmt=self.pix_fmt,              # "ARGB" or "ABGR"
+            usecpuinputbuffer=False,       # device input (expects .cuda()->[planes])
+            codec=self.codec,
+            **enc_opts
+        )
+
+        self._dec = nvc.CreateDecoder(
+            gpuid=self.gpu_id,
+            codec=codec_enum,
+            usedevicememory=True,          # GPU output frames
+            maxwidth=W,
+            maxheight=H,
+            outputColorType=nvc.OutputColorType.RGB
+        )
+
+        self._enc_w, self._enc_h = W, H
+
+    def _nv_roundtrip_rgb(self, canv_pad_cuda: torch.Tensor) -> torch.Tensor:
+        class AppCAI:
+            def __init__(self, t: torch.Tensor):
+                assert t.is_cuda and t.dtype == torch.uint8 and t.is_contiguous()
+                itemsize = t.element_size()
+                self.__cuda_array_interface__ = {
+                    "shape": tuple(int(x) for x in t.shape),             # (H,W,4)
+                    "strides": tuple(int(s*itemsize) for s in t.stride()),
+                    "typestr": "|u1",
+                    "data": (int(t.data_ptr()), False),
+                    "version": 3,
+                }
+                self._keep = t  # pin
+
+        class AppFrame:
+            def __init__(self, t_hwc_u8: torch.Tensor):
+                self._planes = [AppCAI(t_hwc_u8)]
+            def cuda(self):
+                return self._planes
+
+        T, _, H, W = canv_pad_cuda.shape
+        self._ensure_codec(W, H)
+
+        use_abgr = (self.pix_fmt.upper() == "ABGR")
+        use_argb = (self.pix_fmt.upper() == "ARGB")
+        if not (use_abgr or use_argb):
+            raise ValueError(f"pix_fmt '{self.pix_fmt}' must be 'ABGR' or 'ARGB'")
+
+        rec_list = []
+        total_bits = 0
+
+        for t in range(T):
+            rgb_u8 = (canv_pad_cuda[t].clamp(0,1)*255.0+0.5).to(torch.uint8).contiguous()
+            R,G,B = rgb_u8[0], rgb_u8[1], rgb_u8[2]
+            A = torch.full_like(R, 255, dtype=torch.uint8)
+            hwc = (torch.stack([A,B,G,R], dim=-1) if use_abgr else torch.stack([A,R,G,B], dim=-1)).contiguous()
+
+            bitstream = self._enc.Encode(AppFrame(hwc))
+            if bitstream:
+                total_bits += len(bitstream)*8
+                for frame in self._dec.Decode(nvc.PacketData(bitstream)):
+                    frm = torch.from_dlpack(frame)                      # GPU zero-copy
+                    rec_list.append(frm.permute(2,0,1).contiguous() if frm.shape[-1]==3 else frm)
+
+        tail = self._enc.EndEncode()
+        if tail:
+            total_bits += len(tail)*8
+            for frame in self._dec.Decode(nvc.PacketData(tail)):
+                frm = torch.from_dlpack(frame)
+                rec_list.append(frm.permute(2,0,1).contiguous() if frm.shape[-1]==3 else frm)
+
+        if len(rec_list) < T:
+            raise RuntimeError(f"Decoded fewer frames ({len(rec_list)}) than encoded ({T}).")
+
+        rec = torch.stack(rec_list[:T], dim=0).to(torch.float32)/255.0
+        self._last_bits = int(total_bits)
+        return rec
+
+    def _create_cuda_ctx_and_stream(self):
+        """
+        Return (CUcontext_ptr:int, CUstream_ptr:int) for GPU self.gpu_id.
+        Uses PyTorch's primary context; creates a CuPy stream for CUstream.
+        """
+
+        # 1) Bind both frameworks to the target GPU
+        torch.cuda.set_device(self.gpu_id)
+        cp.cuda.Device(self.gpu_id).use()
+
+        # 2) Make sure a primary context exists by touching the device
+        _ = torch.empty(1, device=f'cuda:{self.gpu_id}')
+        torch.cuda.synchronize()
+
+        # 3) Load libcuda and query current CUcontext (primary) pointer
+        _lib_names = [
+            "libcuda.so",                # Linux
+            "libcuda.dylib",            # macOS (rare for CUDA)
+            "nvcuda.dll",               # Windows
+        ]
+        _libcuda = None
+        for _name in _lib_names:
+            try:
+                _libcuda = ctypes.CDLL(_name)
+                break
+            except OSError:
+                continue
+        if _libcuda is None:
+            raise RuntimeError("Could not load libcuda; ensure the NVIDIA driver is installed and visible.")
+
+        cuCtxGetCurrent = _libcuda.cuCtxGetCurrent
+        cuCtxGetCurrent.restype = ctypes.c_int
+        cuCtxGetCurrent.argtypes = [ctypes.POINTER(ctypes.c_void_p)]
+
+        ctx_ptr = ctypes.c_void_p(None)
+        err = cuCtxGetCurrent(ctypes.byref(ctx_ptr))
+        if err != 0 or not ctx_ptr.value:
+            # Try once more after an allocation (forces primary context)
+            _ = torch.empty(1, device=f'cuda:{self.gpu_id}')
+            torch.cuda.synchronize()
+            err = cuCtxGetCurrent(ctypes.byref(ctx_ptr))
+            if err != 0 or not ctx_ptr.value:
+                raise RuntimeError(f"cuCtxGetCurrent failed (err={err}); no current CUDA context available.")
+
+        # 4) Create a CuPy stream on this device and return its CUstream pointer
+        self._cupy_stream_obj = cp.cuda.Stream()     # keep alive
+        cu_stream = int(self._cupy_stream_obj.ptr)   # raw CUstream handle (integer)
+
+        # 5) Return raw pointers (integers)
+        return int(ctx_ptr.value), cu_stream
+
+
+class AppFrame:
+    def __init__(self, width, height, format):
+        if format == "NV12":
+            nv12_frame_size = int(width * height * 3 / 2)
+            self.gpuAlloc = cuda.mem_alloc(nv12_frame_size)
+            self.cai = []
+            self.cai.append(AppCAI(
+            (height, width, 1), 
+            (width, 1, 1), 
+            "|u1", self.gpuAlloc))
+            chroma_alloc = int(self.gpuAlloc) 
+            + width * height
+            self.cai.append(AppCAI((int(height / 2), 
+            int(width / 2), 2), 
+            (width, 2, 1), 
+            "|u1", 
+            chroma_alloc))
+            self.frameSize = nv12_frame_size
+    def cuda(self):
+        return self.cai
+
+
+class AV1VideoCodecWrapper(nn.Module):
+    """
+    PyAV (libaom-av1) wrapper. Do as much as possible on CUDA:
+      CUDA: normalize -> pack -> pad
+      CPU : encode/decode (PyAV)
+      CUDA: crop -> unpack -> de-normalize (+ metrics)
+    """
+    def __init__(self, cfg_codec, device="cuda"):
+        super().__init__()
+        self.device       = torch.device(device)
+        self.in_channels  = int(cfg_codec.in_channels)
+        self.packing_mode = cfg_codec.packing_mode
+        self.align        = int(getattr(cfg_codec, "align", DCVC_ALIGN))
+        self.quant_mode   = cfg_codec.quant_mode
+        self.global_range = tuple(cfg_codec.global_range)
+
+        # AV1 knobs
+        self.crf     = int(getattr(cfg_codec, "crf", cfg_codec.crf))
+        self.preset  = str(getattr(cfg_codec, "preset", "4"))        # libaom "cpu-used"
+        self.gop     = int(getattr(cfg_codec, "gop", cfg_codec.gop))
+        self.fps     = int(getattr(cfg_codec, "fps", 30))
+        self.pix_fmt = str(getattr(cfg_codec, "pix_fmt", "yuv444p"))
+
+        self.pack_fn   = pack_planes_to_rgb
+        self.unpack_fn = unpack_rgb_to_planes
+        self._last_bits = 0
+
+    # ------------------------------ feature planes ------------------------------
+    @torch.no_grad()
+    def forward(self, frames: torch.Tensor):
+        """
+        frames: [T,C,H,W] float (any device). Returns recon [T,C,H,W] on input device.
+        """
+        assert frames.dim() == 4 and frames.shape[1] == self.in_channels
+        in_dev = frames.device
+        T, C, H, W = frames.shape
+
+        # CUDA path: normalize, pack, pad
+        x = frames.to(dtype=torch.float32, device=in_dev, non_blocking=True)
+        x01, c_min, scale = normalize_planes(x, mode=self.quant_mode, global_range=self.global_range)   # GPU
+        canv_pad, orig_size = self.pack_fn(x01, align=self.align, mode=self.packing_mode)               # GPU [T,3,Hp,Wp]
+        H2, W2 = orig_size
+        Hp, Wp = canv_pad.shape[-2:]
+
+        # CPU path: AV1 roundtrip
+        canv_cpu = canv_pad.detach().to('cpu', copy=True)                                               # CPU
+        rec_canv_cpu = self._av1_roundtrip(canv_cpu, fps=self.fps, gop=self.gop,
+                                           crf=self.crf, cpu_used=self.preset, pix_fmt=self.pix_fmt)   # CPU [T,3,Hp,Wp]
+
+        # Back to CUDA: crop, unpack, de-normalize, metrics
+        rec_canv = rec_canv_cpu.to(in_dev, non_blocking=True)                                           # GPU
+        rec_canv = rec_canv[..., :H2, :W2]                                                              # [T,3,H2,W2]
+        rec01    = self.unpack_fn(rec_canv, C, (H2, W2), mode=self.packing_mode)                        # [T,C,H,W] GPU
+        recon    = (rec01 * scale + c_min).to(torch.float32)                                            # GPU
+
+        # bpp & psnr on GPU
+        bpp_val = self._last_bits / float(T * Hp * Wp)
+        bpp     = torch.tensor(bpp_val, device=in_dev, dtype=torch.float32)
+        if self.quant_mode == "global":
+            peak = float(self.global_range[1] - self.global_range[0])
+            psnr = tetrirf_utils.mse2psnr_with_peak(F.mse_loss(recon, x), peak=peak)
+        else:
+            raise NotImplementedError("Only 'global' quant_mode supported.")
+
+        return recon, bpp, psnr
+
+    # --------------------------------- density ----------------------------------
+    @torch.no_grad()
+    def forward_density(self, dens_seq: torch.Tensor):
+        """
+        dens_seq: [T,1,Dy,Dx,Dz] float (any device) -> recon same shape (on input device).
+        """
+        assert dens_seq.dim() == 5 and dens_seq.shape[1] == 1
+        in_dev = dens_seq.device
+        T, _, Dy, Dx, Dz = dens_seq.shape
+
+        # CUDA: map to [0,1], tile to canvases, pad
+        d   = dens_seq.to(dtype=torch.float32, device=in_dev, non_blocking=True)
+        d01 = dens_to01(d)                                                                              # [T,1,Dy,Dx,Dz] GPU
+
+        # tile per t on GPU
+        mono_list = []
+        Hc = Wc = None
+        for t in range(T):
+            chw  = d01[t].view(1, Dy, Dx, Dz)                                                           # [1,C,H,W] GPU
+            mono, (Hct, Wct) = tile_1xCHW(chw)                                                          # [Hc,Wc] GPU
+            if Hc is None:
+                Hc, Wc = Hct, Wct
+            mono_list.append(mono)
+        mono_stack = torch.stack(mono_list, dim=0)                                                      # [T,Hc,Wc] GPU
+        canv       = mono_stack.unsqueeze(1).repeat(1, 3, 1, 1)                                         # [T,3,Hc,Wc] GPU
+
+        pad_h = (self.align - Hc % self.align) % self.align
+        pad_w = (self.align - Wc % self.align) % self.align
+        canv_pad = F.pad(canv, (0, pad_w, 0, pad_h), mode="replicate")                                  # [T,3,Hp,Wp] GPU
+        Hp, Wp = canv_pad.shape[-2:]
+
+        # CPU: AV1 roundtrip
+        rec_canv_cpu = self._av1_roundtrip(canv_pad.detach().to('cpu', copy=True),
+                                           fps=self.fps, gop=self.gop, crf=self.crf,
+                                           cpu_used=self.preset, pix_fmt=self.pix_fmt)                  # CPU
+
+        # Back to CUDA: crop, untile, de-normalize, metrics
+        rec_canv = rec_canv_cpu.to(in_dev, non_blocking=True)[..., :Hc, :Wc]                            # [T,3,Hc,Wc] GPU
+
+        d01_recs = []
+        for t in range(T):
+            mono_rec = rec_canv[t, 0]                                                                   # [Hc,Wc] GPU
+            rec_chw  = untile_to_1xCHW(mono_rec, Dy, Dx, Dz)                                            # [1,Dy,Dx,Dz] GPU
+            d01_recs.append(rec_chw)
+        d01_rec = torch.stack(d01_recs, dim=0).view(T, 1, Dy, Dx, Dz)                                   # GPU
+        d_rec   = dens_from01(d01_rec)                                                                  # GPU
+
+        bpp_val = self._last_bits / float(T * Hp * Wp)
+        bpp     = torch.tensor(bpp_val, device=in_dev, dtype=torch.float32)
+        mse  = F.mse_loss(d_rec, d)
+        psnr = 10.0 * torch.log10((35.0 ** 2) / (mse + 1e-12))
+
+        return d_rec, bpp, psnr
+
+    # ------------------------------ PyAV AV1 core ------------------------------
+    def _av1_roundtrip(
+        self,
+        canvases: torch.Tensor,   # [T,3,H,W] float in [0,1], **CPU**
+        fps: int, gop: int, crf: int, cpu_used: str, pix_fmt: str
+    ) -> torch.Tensor:
+        """
+        Encode canvases -> bytes (IVF in-memory) -> decode -> [T,3,H,W] float CPU.
+        Accumulates total bitstream length in self._last_bits.
+        """
+        assert canvases.device.type == 'cpu', "PyAV expects CPU tensors"
+        assert canvases.dim() == 4 and canvases.shape[1] == 3
+        T, _, H, W = canvases.shape
+
+        out_buf = io.BytesIO()
+        oc = av.open(out_buf, mode='w', format='ivf')
+
+        stream = oc.add_stream('libaom-av1', rate=fps)
+        stream.width  = W
+        stream.height = H
+        stream.pix_fmt = pix_fmt
+        stream.time_base = Fraction(1, fps)
+        stream.codec_context.time_base = Fraction(1, fps)
+        stream.gop_size = gop
+
+        opts = {
+            'crf': str(crf),
+            'cpu-used': str(cpu_used),
+            'enable-chroma-deltaq': '0',
+        }
+        for k, v in opts.items():
+            stream.codec_context.options[k] = v
+
+        # Encode
+        for t in range(T):
+            # ensure contiguous uint8 HxWx3
+            frm = (canvases[t].clamp(0,1).permute(1,2,0).contiguous().numpy() * 255.0 + 0.5).astype(np.uint8)
+            frame = av.VideoFrame.from_ndarray(frm, format='rgb24')
+            frame = frame.reformat(format=pix_fmt)
+            for packet in stream.encode(frame):
+                oc.mux(packet)
+        for packet in stream.encode(None):
+            oc.mux(packet)
+        oc.close()
+
+        bitstream = out_buf.getvalue()
+        self._last_bits = len(bitstream) * 8
+
+        # Decode
+        in_buf = io.BytesIO(bitstream)
+        ic = av.open(in_buf, mode='r')
+
+        rec_frames: List[torch.Tensor] = []
+        for frame in ic.decode(video=0):
+            rgb = frame.to_ndarray(format='rgb24')                                   # HxWx3 uint8
+            rec_frames.append(torch.from_numpy(rgb).permute(2,0,1).float() / 255.0)  # CPU
+        ic.close()
+
+        if len(rec_frames) != T:
+            raise RuntimeError(f"Decoded {len(rec_frames)} frames, expected {T}")
+
+        out = torch.stack(rec_frames, dim=0)                                         # [T,3,H,W] CPU
+        if out.shape[-2:] != (H, W):
+            raise RuntimeError(f"AV1 roundtrip size mismatch: in ({H},{W}) vs out {tuple(out.shape[-2:])}")
+        return out
 
 
 class DCVCVideoCodecWrapper(nn.Module):

@@ -1,5 +1,6 @@
 _base_ = '../default.py'
-expname = 'flame_steak_video_ds3'
+# expname = 'flame_steak_video_ds3'
+expname = 'flame_steak_video'
 ckptname = None
 wandbprojectname = 'ca_flame_steak_video'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/dynerf_flame_steak'
@@ -12,7 +13,7 @@ data = dict(
 	xyz_max = [ 1.4,   1.4,  0.6],
 	load2gpu_on_the_fly=True,
     test_frames = [0],
-	factor = 3,
+	factor = 2,
 )
 fine_model_and_render = dict(
 	num_voxels=192**3,

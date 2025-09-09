@@ -18,3 +18,4 @@ TeTriRF/results/*
 data/
 wandb/
 .torch_extensions*
+externals/*

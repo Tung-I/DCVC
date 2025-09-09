@@ -1,5 +1,5 @@
 _base_ = '../default.py'
-expname = 'dcvc_qp48'
+expname = 'dcvc_qp12'
 ckptname = 'flame_steak_video_ds3'
 wandbprojectname = 'ca_flame_steak_video'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/dynerf_flame_steak'
@@ -36,7 +36,7 @@ codec = dict(
     use_sandwich = False,  
     convert_ycbcr=True,
     freeze_dcvc=True,
-    dcvc_qp = 48,
+    dcvc_qp = 12,
     quant_mode = "global",
     global_range = (-20.0, 20.0),
     packing_mode = "flatten",

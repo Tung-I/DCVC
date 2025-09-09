@@ -11,7 +11,7 @@ from TeTriRF.lib.dvgo import DirectVoxGO
 from TeTriRF.lib.dmpigo import DirectMPIGO
 
 from TeTriRF.lib.dvgo_video import RGB_Net, RGB_SH_Net
-from src.models.codec_wrapper import DCVCVideoCodecWrapper
+from src.models.codec_wrapper import DCVCVideoCodecWrapper, AV1VideoCodecWrapper, PyNvVideoCodecWrapper
 
 class STE_DVGO_Video(nn.Module):
     def __init__(self, frameids, xyz_min, xyz_max, cfg=None, device='cuda'):
@@ -26,8 +26,14 @@ class STE_DVGO_Video(nn.Module):
         self._initial_models()
 
         # ---- Codec (video only) ----
-        assert cfg.codec.name == 'DCVCVideoCodec', "STE_DVGO_Video requires DCVCVideoCodec"
-        self.codec = DCVCVideoCodecWrapper(self.cfg.codec, device)
+        if cfg.codec.name == 'DCVCVideoCodec':
+            self.codec = DCVCVideoCodecWrapper(self.cfg.codec, device)
+        elif cfg.codec.name == 'AV1VideoCodec':
+            self.codec = AV1VideoCodecWrapper(self.cfg.codec, device)
+        elif cfg.codec.name == 'PyNvVideoCodecWrapper':
+            self.codec = PyNvVideoCodecWrapper(self.cfg.codec, device)
+        else:
+            raise NotImplementedError(f"Unknown codec {cfg.codec.name}")
 
         # ---- Cache policy ----
         self.codec_refresh_k     = int(getattr(self.cfg.codec, "codec_refresh_k", 1))
@@ -459,31 +465,3 @@ class STE_DVGO_Video(nn.Module):
     def _set_requires_grad_module(self, module: torch.nn.Module, flag: bool):
         for p in module.parameters(recurse=True):
             p.requires_grad_(flag)
-
-
-
-    def _to_cpu_cache(t: torch.Tensor, pin: bool = True, dtype=torch.float32) -> torch.Tensor:
-        """
-        Detach + move to CPU (pinned) + make contiguous.
-        Keeps a private copy (copy=True) to avoid referencing freed storage.
-        """
-        t_cpu = t.detach().to('cpu', dtype=dtype, copy=True).contiguous()
-        if pin and torch.cuda.is_available():
-            try: t_cpu = t_cpu.pin_memory()
-            except Exception: pass
-        return t_cpu
-
-    def _from_cpu_cache(t_cpu: torch.Tensor, device: torch.device) -> torch.Tensor:
-        """Move cached CPU tensor to device, using non_blocking H→D if pinned."""
-        return t_cpu.to(device=device, non_blocking=True)
-
-    def _host_float(x) -> float:
-        """Convert tensor/number -> built-in float (on host)."""
-        if x is None: return 0.0
-        if isinstance(x, (float, int)): return float(x)
-        if torch.is_tensor(x): return float(x.detach().cpu().item())
-        return float(x)
-
-    def _dev_scalar(x, device: torch.device) -> torch.Tensor:
-        """Make a device scalar tensor from host float/int/tensor."""
-        return torch.tensor(_host_float(x), device=device, dtype=torch.float32)

@@ -1,5 +1,5 @@
 _base_ = '../default.py'
-expname = 'dcvc_qp48'
+expname = 'av1_crf28'
 ckptname = 'flame_steak_video_ds3'
 wandbprojectname = 'ca_flame_steak_video'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/dynerf_flame_steak'
@@ -28,24 +28,23 @@ fine_model_and_render = dict(
 )
 
 codec = dict(
-    name = 'DCVCVideoCodec',
+    name = 'AV1VideoCodec',
     ckpt_path = None,
     train_mode='ste',
     unet_pre_base = 32,             # UNet width
     unet_post_base = 32,
-    use_sandwich = False,  
+    in_channels = 12,  
     convert_ycbcr=True,
-    freeze_dcvc=True,
-    dcvc_qp = 48,
+    dcvc_qp = None,
     quant_mode = "global",
     global_range = (-20.0, 20.0),
     packing_mode = "flatten",
-    mlp_layers = 2,
-    in_channels = 12,  # Number of input channels for the DCVC codec
     use_amp=True,
     quality=None,
     codec_refresh_k = 32,
     refresh_trigger_eps = 0.0,  # e.g., 0.05 to refresh early if planes drift >5% L2
+    crf = 28,
+    gop = 10,
 )
 
 _k = 1
