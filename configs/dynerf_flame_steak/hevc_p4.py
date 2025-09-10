@@ -48,7 +48,7 @@ codec = dict(
     fps = 30,
     nv_constqp = 24,  #[0, 51]
     nv_codec = "hevc",
-    fmt = "ABGR",
+    fmt = "YUV444",
     nv_preset = "P4",
 )
 

@@ -9,6 +9,7 @@ import cv2
 import copy
 from tqdm.auto import tqdm
 from einops import rearrange
+from PIL import Image
 
 from TeTriRF.lib.dcvc_wrapper import (
     pack_planes_to_rgb, unpack_rgb_to_planes,
@@ -27,25 +28,23 @@ python posthoc_plane_unpacker.py \
     --packing_mode flatten \
     --qmode global \
     --codec jpeg
+
+python eval_plane_unpacker.py \
+    --root_dir logs/dynerf_flame_steak/flame_steak_video_ds3 \
+    --rec_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_crf28_g10_yuv444p \
+    --numframe 10 \
+    --packing_mode flatten \
+    --qmode global 
+
+python eval_plane_unpacker.py \
+        --root_dir logs/dynerf_flame_steak/flame_steak_video_ds3 \
+        --rec_dir logs/dynerf_flame_steak/av1_crf44/compressed_av1_crf44_g10_yuv444p \
+        --numframe 10 \
+        --packing_mode flatten \
+        --qmode global
 """
 
 # -----------------------------------------------------------------------------
-
-NBITS = 2 ** 16 - 1
-
-def feat4d_to_dens5d(x: torch.Tensor, orient: str = "xz") -> torch.Tensor:
-    """
-    x: [1,C,H,W] per dens5d_to_feat4d; returns [1,1,Dy,Dx,Dz]
-    """
-    assert x.ndim == 5 and x.shape[0] == 1
-    if orient == "yx":
-        return rearrange(x, "b 1 Dz Dy Dx -> b 1 Dy Dx Dz")
-    elif orient == "yz":
-        return rearrange(x, "b 1 Dx Dy Dz -> b 1 Dy Dx Dz")
-    elif orient == "xz":
-        return rearrange(x, "b 1 Dy Dx Dz -> b 1 Dy Dx Dz")
-    else:
-        raise ValueError(f"Unknown orient={orient!r}")
 
 def untile_image(image: np.ndarray, h: int, w: int, ndim: int) -> torch.Tensor:
     """Inverse of tile_maker in the packer."""
@@ -58,51 +57,69 @@ def untile_image(image: np.ndarray, h: int, w: int, ndim: int) -> torch.Tensor:
         feat[0, i] = torch.from_numpy(image[x : x + h, y : y + w])
         y += w
     return feat
-
 # -----------------------------------------------------------------------------
-
 
 def dequantise_channel(t: torch.Tensor, low: float, high: float) -> torch.Tensor:
     return t * (high - low) + low
 
-# -----------------------------------------------------------------------------
+def _load_rgb01(path: str) -> torch.Tensor:
+    """
+    Robust loader for packed canvas PNG:
+      - Always returns [1,3,H,W] float32 in [0,1] (CPU).
+      - Works for 8-bit (uint8) and 16-bit (uint16) PNGs.
+      - Forces RGB channel order.
+    """
+    im = Image.open(path)
+    if im.mode == "I;16" or im.mode == "I;16B":
+        # 16-bit grayscale not expected here; but handle generally
+        im = im.convert("RGB")
+    else:
+        im = im.convert("RGB")
+    arr = np.array(im)
+    # dtype-aware scaling
+    if arr.dtype == np.uint16:
+        den = float(65535.0)
+    else:
+        # most PNGs from the video eval are 8-bit
+        arr = arr.astype(np.uint8, copy=False)
+        den = float(255.0)
+    t01 = torch.from_numpy(arr.astype(np.float32) / den).permute(2,0,1).unsqueeze(0)  # [1,3,H,W]
+    return t01
 
+# -----------------------------------------------------------------------------
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--logdir", required=True, help="root of planeimg and checkpoints")
+    p.add_argument("--root_dir", required=True, help="root of ckpt")
+    p.add_argument("--rec_dir", required=True, help="root of reconstructed images")
     p.add_argument("--model_template", default="fine_last_0.tar", help="template ckpt for metadata")
     p.add_argument("--numframe", type=int, default=20)
     p.add_argument("--startframe", type=int, default=0)
-    p.add_argument("--qp", type=int, default=20)
     p.add_argument("--packing_mode", choices=["flatten", "separate", "grouped", "correlation", "mosaic"], default="flatten",
                help="Feature packing mode (match training cfg.dcvc.packing_mode)")
     p.add_argument("--qmode", choices=["global", "per_channel"], required=True)
     p.add_argument("--dcvc", action="store_true", help="use compressed DCVC data or not")
     p.add_argument("--orient", choices=["yx", "yz", "xz"], default="xz", help="orientation of the feature planes")
-    p.add_argument("--codec", choices=["jpeg"], default=None, help="codec for image compression")
     return p.parse_args()
 
 # -----------------------------------------------------------------------------
 
-
 def main():
     args = parse_args()
-
+    root = args.root_dir
     S, N = args.startframe, args.startframe + args.numframe - 1
 
-    root = args.logdir.rstrip("/")
-    meta_root = os.path.join(root, f"planeimg_{S:02d}_{N:02d}_{args.packing_mode}_{args.qmode}")
-    out_root = os.path.join(root, f"planeimg_{S:02d}_{N:02d}_{args.packing_mode}_{args.qmode}_{args.codec}_qp{args.qp}")
-    print(f"[INFO] Loaded meta data from {meta_root}")
-    print(f"[INFO] Loaded ckpt template from {os.path.join(root, args.model_template)}")
-    print(f"[INFO] Load reconstructed images from {out_root}")
-    print(f"[INFO] Writing unpacked tensor planes to {out_root}")
+    meta_dir = os.path.join(root, f"planeimg_{S:02d}_{N:02d}_{args.packing_mode}_{args.qmode}")
+    rec_img_dir = args.rec_dir
+    print(f"[INFO] Loaded meta data from {meta_dir}")
+    print(f"[INFO] Loaded ckpt template from {root}")
+    print(f"[INFO] Load reconstructed images from {rec_img_dir}")
+    print(f"[INFO] Writing unpacked tensor planes to {rec_img_dir}")
 
     # ---------------------------------------------------------------------
     # load meta + template ckpt
     # ---------------------------------------------------------------------
-    meta = torch.load(os.path.join(meta_root, "planes_frame_meta.nf"))
+    meta = torch.load(os.path.join(meta_dir, "planes_frame_meta.nf"))
     bounds = meta["bounds"]            # dict[plane][frame][channel] -> (low, hi)
     group_map = meta.get("groups", None)
     qmode_saved = meta["qmode"]
@@ -141,14 +158,14 @@ def main():
             feat = torch.zeros(1, C, H, W)
 
             if args.packing_mode == "flatten":
-                folder = os.path.join(out_root, plane_name)
+                folder = os.path.join(rec_img_dir, plane_name)
                 path = os.path.join(folder, f"im{fid + 1:05d}.png")
                 arr = cv2.imread(path, -1)                                      # H×W×3 uint16
                 if arr is None:
                     raise FileNotFoundError(f"Image not found: {path}")
 
-                # back to float01 tensor, shape [1,3,Hp,Wp]
-                y_pad = torch.from_numpy(arr.astype(np.float32) / NBITS).permute(2,0,1).unsqueeze(0)
+                # Always RGB, scaled to [0,1], [1,3,Hp,Wp]
+                y_pad = _load_rgb01(path)
 
                 # crop back to the exact pre-pad size we saved at packing
                 if plane_name not in orig_sizes_map:
@@ -235,14 +252,14 @@ def main():
             ckpt_cur["model_state_dict"][f"k0.{plane_name}"] = feat.clone()
 
         # -------------------- density grid ---------------------
-        dens_folder = os.path.join(out_root, "density")
+        dens_folder = os.path.join(rec_img_dir, "density")
         path = os.path.join(dens_folder, f"im{fid + 1:05d}.png")
         arr = cv2.imread(path, -1)                                       # H×W×3 uint16
         if arr is None:
             raise FileNotFoundError(f"Image not found: {path}")
 
         # back to float01 tensor on CPU, [1,3,Hp,Wp]
-        y_pad = torch.from_numpy(arr.astype(np.float32) / NBITS).permute(2,0,1).unsqueeze(0)
+        y_pad = _load_rgb01(path) 
 
         # crop to original mono canvas size saved during packing
         Hc, Wc = density_orig_list[frame_idx]
@@ -258,9 +275,9 @@ def main():
 
         # save restored checkpoint
         ckpt_cur["model_state_dict"]["density.grid"] = d5.clone()
-        torch.save(ckpt_cur, os.path.join(out_root, f"fine_last_{fid}.tar"))
+        torch.save(ckpt_cur, os.path.join(rec_img_dir, f"fine_last_{fid}.tar"))
 
-    print("[DONE] Restored checkpoints written to", out_root)
+    print("[DONE] Restored checkpoints written to", rec_img_dir)
 
 
 if __name__ == "__main__":

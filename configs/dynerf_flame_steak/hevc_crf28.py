@@ -1,5 +1,5 @@
 _base_ = '../default.py'
-expname = 'av1_crf28'
+expname = 'hevc_crf28'
 ckptname = 'flame_steak_video_ds3'
 wandbprojectname = 'ca_flame_steak_video'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/dynerf_flame_steak'
@@ -28,7 +28,7 @@ fine_model_and_render = dict(
 )
 
 codec = dict(
-    name = 'AV1VideoCodec',
+    name = 'HEVCVideoCodec',
     ckpt_path = None,
     train_mode='ste',
     unet_pre_base = 32,             # UNet width

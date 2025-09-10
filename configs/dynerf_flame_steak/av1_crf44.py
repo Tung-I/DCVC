@@ -1,5 +1,5 @@
 _base_ = '../default.py'
-expname = 'av1_crf28'
+expname = 'av1_crf44'
 ckptname = 'flame_steak_video_ds3'
 wandbprojectname = 'ca_flame_steak_video'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/dynerf_flame_steak'
@@ -43,7 +43,7 @@ codec = dict(
     quality=None,
     codec_refresh_k = 128,
     refresh_trigger_eps = 0.0,  # e.g., 0.05 to refresh early if planes drift >5% L2
-    crf = 28,
+    crf = 44,
     gop = 10,
 )
 

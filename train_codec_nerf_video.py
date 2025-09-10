@@ -22,7 +22,7 @@ from TeTriRF.lib import dvgo, dvgo_video, dcvc_dvgo_video, utils      # unchange
 from TeTriRF.lib.load_data import load_data
 from torch_efficient_distloss import flatten_eff_distloss
 
-WANDB=False
+WANDB=True
 
 """
 Usage:

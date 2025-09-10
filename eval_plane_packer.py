@@ -19,13 +19,15 @@ Quantisation modesp`
 
 Usage example
 -------------
-```
 python posthoc_plane_packer.py \
       --logdir logs/out_triplane/flame_steak_image_jpeg_qp10 \
       --numframe 1 \
       --packing_mode flatten \
       --qmode global
-```
+
+python eval_plane_packer.py \
+    --logdir logs/dynerf_flame_steak/hevc_crf28 \
+        --numframe 10 --packing_mode flatten  --qmode global
 
 """
 
@@ -165,17 +167,6 @@ NBITS = 2 ** 16 - 1  # 16‑bit PNG
 CLIP_PCT = 0.1       # clip 0.5 % low / high tails (per channel)
 PLANE_BOUNDS: Dict[str, List[Tuple[float, float]]] = {}
 
-def _clip_percentiles(ch: torch.Tensor, pct: float) -> Tuple[float, float]:
-    """Return (low, high) percentiles after clipping *pct*%% on each side."""
-    if pct <= 0:
-        return float(ch.min()), float(ch.max())
-    low_q = torch.quantile(ch, pct / 100.0).item()
-    high_q = torch.quantile(ch, 1.0 - pct / 100.0).item()
-    if high_q - low_q < 1e-6:
-        # fallback to full range when nearly constant
-        return float(ch.min()), float(ch.max())
-    return low_q, high_q
-
 def quantise(feat: torch.Tensor, qmode: str, bounds_out: List[Tuple[float, float]], plane_name=None) -> torch.Tensor:
     """Quantise *feat* (shape [1, C, H, W]).
 
@@ -198,8 +189,6 @@ def quantise(feat: torch.Tensor, qmode: str, bounds_out: List[Tuple[float, float
         norm = (ch.clamp(low, high) - low) / (high - low + 1e-8)
         q_ch.append(torch.round(norm * NBITS) / NBITS)
     return torch.stack(q_ch, dim=0).unsqueeze(0).clamp_(0, 1)
-
-
 
 
 def main():

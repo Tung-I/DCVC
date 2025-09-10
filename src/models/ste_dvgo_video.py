@@ -11,7 +11,7 @@ from TeTriRF.lib.dvgo import DirectVoxGO
 from TeTriRF.lib.dmpigo import DirectMPIGO
 
 from TeTriRF.lib.dvgo_video import RGB_Net, RGB_SH_Net
-from src.models.codec_wrapper import DCVCVideoCodecWrapper, AV1VideoCodecWrapper, PyNvVideoCodecWrapper
+from src.models.codec_wrapper import DCVCVideoCodecWrapper, HEVCVideoCodecWrapper, AV1VideoCodecWrapper, PyNvVideoCodecWrapper
 
 class STE_DVGO_Video(nn.Module):
     def __init__(self, frameids, xyz_min, xyz_max, cfg=None, device='cuda'):
@@ -32,6 +32,8 @@ class STE_DVGO_Video(nn.Module):
             self.codec = AV1VideoCodecWrapper(self.cfg.codec, device)
         elif cfg.codec.name == 'PyNvVideoCodecWrapper':
             self.codec = PyNvVideoCodecWrapper(self.cfg.codec, device)
+        elif cfg.codec.name == 'HEVCVideoCodec':
+            self.codec = HEVCVideoCodecWrapper(self.cfg.codec, device)
         else:
             raise NotImplementedError(f"Unknown codec {cfg.codec.name}")
 
