@@ -28,7 +28,7 @@ from torch_efficient_distloss import flatten_eff_distloss
 """
 Usage:
     python train_triplane.py --config configs/dynerf_flame_steak/video_z14.py --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 --training_mode 1
-    python train_triplane.py --config TeTriRF/configs/N3D/flame_steak_image.py --frame_ids 0  --training_mode 1
+    python train_triplane.py --config configs/dynerf_sear_steak/image_l.py --frame_ids 0  --training_mode 1
     python train_triplane.py --config TeTriRF/configs/N3D/flame_steak.py --frame_ids 0 1 2 3 4 5 6 7 8 9  --training_mode 1
     """
 

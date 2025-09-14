@@ -22,9 +22,7 @@ import time
 
 """
 Usage:
-    python render.py --config  configs/dynerf_flame_steak/video.py --frame_ids 0 --render_train --startframe 0 --numframe 1 --reald --dump_images
-    python render.py --config  configs/dynerf_sear_steak/jpeg_qp0.py --frame_ids 0 --render_test --startframe 0 --numframe 1 --qp 0 --codec jpeg --codec-adapt --dump_images
-    python render.py --config  configs/dynerf_flame_steak/video.py \
+    python render.py --config  configs/dynerf_sear_steak/image_l.py --frame_ids 0 --render_test
         --frame_ids 0 1 2 3 4 5 6 7 8 9 --render_test \
         --ckpt_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_crf28_g10_yuv444p
     
@@ -66,17 +64,6 @@ def config_parser():
                         help='frequency of console printout and metric loggin')
     parser.add_argument("--i_weights", type=int, default=100000,
                         help='frequency of weight ckpt saving')
-    
-    # parser.add_argument("--startframe", type=int, default=0, help='start frame id')
-    # parser.add_argument("--numframe", type=int, default=20, help='number of frames')
-    # parser.add_argument("--reald", action='store_true', help='use compressed data or not, please do uncompression manully before use compressed data')
-    # parser.add_argument("--dcvc_dir", type=str, default=None, help='path to DCVC compressed ckpt')
-    # parser.add_argument("--qmode", type=str, default='global', choices=["global", "per_channel"])
-    # parser.add_argument('--packing_mode', type=str, default='flatten', choices=['flatten', 'separate', 'grouped', 'correlation', 'flatfour'],
-    #                     help='flatten: original; separate: one channel per stream; grouped: RGB triplets + leftover')
-    # parser.add_argument("--codec-adapt", action='store_true', help='use codec-adapted training or not')
-    # parser.add_argument("--posthoc", action='store_true', help='use post-hoc processing or not')
-    # parser.add_argument("--qp", type=int, default=10)
     parser.add_argument("--ckpt_dir", type=str, default=None, help='path to ckpt')
     return parser
 
@@ -236,10 +223,6 @@ if __name__=='__main__':
     args = parser.parse_args()
     cfg = Config.fromfile(args.config)
     cfg.data.frame_ids = args.frame_ids
-    # start_frame_id = args.startframe
-    # numframe = args.numframe
-    # packing_mode = args.packing_mode
-    # S, N = args.startframe, args.startframe+args.numframe-1
     
     print("################################")
     print("--- Frame_ID:", args.frame_ids)
@@ -261,6 +244,8 @@ if __name__=='__main__':
     data_dict = load_everything(args=args, cfg=cfg)
 
     S, E = args.frame_ids[0], args.frame_ids[-1]
+    if E is None:
+        E = S
     for frame_id in args.frame_ids:
         ckpt_path = os.path.join(args.ckpt_dir, f"fine_last_{frame_id}.tar")
         testsavedir = os.path.join(args.ckpt_dir, f'render_test')
@@ -283,27 +268,6 @@ if __name__=='__main__':
             model_class = dvgo.DirectVoxGO
         model = utils.load_model(model_class, ckpt_path, weights_only=False).to(device)
         model.reset_occupancy_cache()
-        
-        # if cfg.fine_model_and_render.dynamic_rgbnet:
-        #     rgbnet_file = None
-        #     rgbnet_files = [f for f in os.listdir(os.path.join(cfg.basedir, cfg.expname)) if f.endswith('.tar') and 'rgbnet' in f]
-        #     if len(rgbnet_files)>0:
-                
-        #         for f in rgbnet_files:
-        #             beg = f.split('_')[1]
-        #             eend = f.split('_')[2].split('.')[0]
-        #             if frame_id <= int(eend) and frame_id>int(beg):
-        #                 rgbnet_file = os.path.join(cfg.basedir, cfg.expname, f'rgbnet_{beg}_{eend}.tar')
-        #                 break
-
-        #         if rgbnet_file is None:
-        #             for f in rgbnet_files:
-        #                 beg = f.split('_')[1]
-        #                 eend = f.split('_')[2].split('.')[0]
-        #                 if frame_id <= int(eend) and frame_id>=int(beg):
-        #                     rgbnet_file = os.path.join(cfg.basedir, cfg.expname, f'rgbnet_{beg}_{eend}.tar')
-        #                     break
-        #     assert rgbnet_file is not None
 
         checkpoint =torch.load(rgbnet_file, weights_only=False)
         model_kwargs = checkpoint['model_kwargs']

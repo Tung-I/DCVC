@@ -39,14 +39,17 @@ class STE_DVGO_Image(torch.nn.Module):
         else:
             raise RuntimeError("DCVCImageCodec only supports single frame input.")
           
-        # Caching, Outer/Inner loop setting 
+        # --- Cache & refresh knobs ---
         self.codec_refresh_k = int(getattr(self.cfg.codec, "codec_refresh_k", 1))
         self.refresh_trigger_eps = float(getattr(self.cfg.codec, "refresh_trigger_eps", 0.0))
+        self.bpp_refresh_k        = int(getattr(self.cfg.codec, "bpp_refresh_k", 1))  # NEW
         self._codec_cache_step = -1
+
         self._codec_cache = {ax: None for ax in ('xy','xz','yz')}          # detached recon (1,C,H,W)
         self._codec_cache_bpp = {ax: None for ax in ('xy','xz','yz')}      # float tensor
         self._codec_cache_psnr = {ax: None for ax in ('xy','xz','yz')}     # float tensor
         self._codec_cache_rawsnap = {ax: None for ax in ('xy','xz','yz')}  # snapshot of raw planes at cache time, for change detection
+        
         self._dens_cache        = None   # [1,1,Dy,Dx,Dz] (detached)
         self._dens_cache_bpp    = None   # scalar tensor
         self._dens_cache_psnr   = None   # scalar tensor
@@ -64,14 +67,10 @@ class STE_DVGO_Image(torch.nn.Module):
         # Build param overrides using STE from cache
         param_map  = dict(dvgo.named_parameters())
         buffer_map = dict(dvgo.named_buffers())
-
-        # build STE overrides
         overrides = self._ste_overrides(frameid)
 
-        # **Robust merge**: place each override into the right dict (param vs buffer)
         param_overrides  = {k: v for k, v in overrides.items() if k in param_map}
         buffer_overrides = {k: v for k, v in overrides.items() if k in buffer_map}
-
         merged_params  = {**param_map,  **param_overrides}
         merged_buffers = {**buffer_map, **buffer_overrides}
 
@@ -83,13 +82,44 @@ class STE_DVGO_Image(torch.nn.Module):
             {'shared_rgbnet': self.rgbnet, 'global_step': global_step, 'mode': mode, **render_kwargs}
         )
 
-        # BPP reporting / weighting
-        bpps_planes = [self._codec_cache_bpp[ax] for ax in ('xy','xz','yz')]
-        avg_bpp = (sum(bpps_planes) + self._dens_cache_bpp) / 3.0
+        # ----- BPP path: gradient-preserved every bpp_refresh_k steps -----
+        use_grad_bpp = bool(getattr(self.cfg.codec, "gradbpp", False))
+        step = int(global_step if global_step is not None else 0)
+        do_grad_bpp = (use_grad_bpp and (self.bpp_refresh_k <= 1 or (step % self.bpp_refresh_k) == 0))
 
-        # diagnostics
-        psnr_by_axis = {ax: self._codec_cache_psnr[ax] for ax in ('xy','xz','yz')}
-        psnr_by_axis['density'] = self._dens_cache_psnr
+        if do_grad_bpp:
+            # Differentiable bpp from CURRENT planes/density (slow path, but periodic)
+            planes_now = self._gather_planes_one_frame(frameid)
+            bpps_planes = [
+                self.codec.estimate_bpp_only(planes_now['xy']),
+                self.codec.estimate_bpp_only(planes_now['xz']),
+                self.codec.estimate_bpp_only(planes_now['yz']),
+            ]
+            dens_now = self._gather_density_one_frame(frameid)
+            dens_bpp = self.codec.estimate_bpp_density_only(dens_now)
+
+            avg_bpp = (sum(bpps_planes) + dens_bpp) / 4.0  # 3 planes + density
+
+            # For logging, still report cached PSNR (detached)
+            psnr_by_axis = {ax: self._codec_cache_psnr[ax] for ax in ('xy','xz','yz')}
+            psnr_by_axis['density'] = self._dens_cache_psnr
+        else:
+            # Fast path: use detached cached bpp (no gradient)
+            bpps_planes = [self._codec_cache_bpp[ax] for ax in ('xy','xz','yz')]
+            dens_bpp    = self._dens_cache_bpp
+
+            # Safeguard in case cache not ready (shouldn’t happen after _maybe_refresh…)
+            device = rays_o.device
+            def _as_scalar(x):
+                if x is None: return torch.tensor(0.0, device=device)
+                return x if torch.is_tensor(x) else torch.tensor(float(x), device=device)
+            bpps_planes = [_as_scalar(b) for b in bpps_planes]
+            dens_bpp    = _as_scalar(dens_bpp)
+
+            avg_bpp = (sum(bpps_planes) + dens_bpp) / 4.0  # 3 planes + density
+
+            psnr_by_axis = {ax: self._codec_cache_psnr[ax] for ax in ('xy','xz','yz')}
+            psnr_by_axis['density'] = self._dens_cache_psnr
         
         return ret_frame, avg_bpp, psnr_by_axis
 

@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -15,6 +16,7 @@ from src.utils.common import get_state_dict
 from src.models.video_model import DMC
 from src.models.image_model import DMCI
 from src.models.dcvc_codec import DCVCImageCodec, DCVCVideoCodec
+from src.utils.transforms import rgb2ycbcr, ycbcr2rgb
 
 from src.models.model_utils import (
     pack_planes_to_rgb, unpack_rgb_to_planes,
@@ -840,12 +842,14 @@ class DCVCImageCodecWrapper(torch.nn.Module):
         - Avoid torch.no_grad() around the codec if you want gradients.
     '''
     def __init__(
-            self, cfg_dcvc, device):
+            self, cfg_dcvc, device, 
+            weight_path="/home/tungichen_umass_edu/DCVC/checkpoints/cvpr2025_image.pth.tar"):
         super().__init__()
         self.device = device
+        self.weight_path = weight_path
 
         self.codec_wrapper = DCVCImageCodec(
-            weight_path="/home/tungichen_umass_edu/DCVC/checkpoints/cvpr2025_image.pth.tar", 
+            weight_path=self.weight_path,
             require_grad=False
             )
 
@@ -860,7 +864,67 @@ class DCVCImageCodecWrapper(torch.nn.Module):
         self.cfg_dcvc = cfg_dcvc
         self.use_amp = cfg_dcvc.use_amp
         self.amp_dtype = torch.float16  # keep TriPlane in fp32, only DCVC in fp16
+
+        self.use_gradbpp_est = getattr(cfg_dcvc, "gradbpp", False)
+        self.bpp_estimator = None
+        if self.use_gradbpp_est:
+            self.bpp_estimator = DMCI()  
+            self.bpp_estimator.load_state_dict(get_state_dict(self.weight_path))
+            self.bpp_estimator.update(0.12)
+            self.bpp_estimator = self.bpp_estimator.to(self.device)
+            # Freeze params so grads flow to input only
+            for p in self.bpp_estimator.parameters():
+                p.requires_grad_(False)
+            self.bpp_estimator.eval()
+            # self.bpp_estimator.half()
+
+    def compute_bpp(
+        self,
+        image_tensor: torch.Tensor   # (B,3,H,W) in [0,1]
+    ) -> torch.Tensor:
+        """
+        Returns differentiable bpp (scalar tensor) w.r.t. image_tensor.
+        """
+        assert self.bpp_estimator is not None, "BPP estimator not initialized"
+        T, C, H, W = image_tensor.shape
+        x_in = rgb2ycbcr(image_tensor)
+        bpp = self.bpp_estimator.estimate_bpp(x_in, qp=self.qp)
+        return bpp
     
+    def estimate_bpp_only(self, planes_1xCHW: torch.Tensor) -> torch.Tensor:
+        """
+        planes_1xCHW: [1,C,H,W] float on any device, raw-domain (same input you pass to .forward())
+        Returns differentiable bpp scalar (bits per padded pixel).
+        """
+        assert self.use_gradbpp_est and self.bpp_estimator is not None, "BPP estimator not enabled"
+        dev = planes_1xCHW.device
+        # 1) normalize to [0,1]
+        x01, _, _ = normalize_planes(planes_1xCHW, mode=self.quant_mode, global_range=self.global_range)  # [1,C,H,W] on dev
+        # 2) pack + pad to align (what codec sees)
+        canv_pad, _ = self.pack_fn(x01, align=self.align, mode=self.packing_mode)  # [1,3,Hp,Wp]
+        # 3) DMCI estimator (works on [0,1] RGB-like)
+        return self.compute_bpp(canv_pad)  # differentiable scalar tensor
+
+    def estimate_bpp_density_only(self, density_1x1: torch.Tensor) -> torch.Tensor:
+        """
+        density_1x1: [1,1,Dy,Dx,Dz] float on any device.
+        Returns differentiable bpp scalar for density.
+        """
+        assert self.use_gradbpp_est and self.bpp_estimator is not None, "BPP estimator not enabled"
+        dev = density_1x1.device
+        # map to [0,1]
+        d01 = dens_to01(density_1x1)                             # [1,1,Dy,Dx,Dz]
+        Dy, Dx, Dz = d01.shape[2:]
+        chw = d01.view(1, Dy, Dx, Dz)                            # [1,C,H,W] with C=Dy
+        mono, (Hc, Wc) = tile_1xCHW(chw)                         # [Hc,Wc]
+        canv = mono.unsqueeze(0).repeat(3, 1, 1).unsqueeze(0)    # [1,3,Hc,Wc]
+        # pad to align
+        pad_h = (self.align - Hc % self.align) % self.align
+        pad_w = (self.align - Wc % self.align) % self.align
+        canv_pad = F.pad(canv, (0, pad_w, 0, pad_h), mode="replicate")  # [1,3,Hp,Wp]
+        # entropy estimator on [0,1]
+        return self.compute_bpp(canv_pad)                        # differentiable scalar tensor
+
     def forward(self, frame: torch.Tensor):
         """
         Args:
@@ -966,6 +1030,13 @@ class DCVCImageCodecWrapper(torch.nn.Module):
         # PSNR in raw density domain (peak = 35)
         mse = F.mse_loss(d_rec, density_1x1)
         psnr = 10.0 * torch.log10((35.0 ** 2) / (mse + 1e-12))
+
+        # ---- NEW: switch bpp source ----
+        if self.use_gradbpp_est and self.bpp_estimator is not None:
+            # Use packed/padded canvas (what the codec sees) for an apples-to-apples bpp
+            # y_pad is (B=1, 3, Hp, Wp) in [0,1].
+            bpp_est = self.compute_bpp(image_tensor=y_pad)
+            bpp = bpp_est.to(y_pad.device, dtype=torch.float32)
 
         return d_rec, bpp, psnr
     

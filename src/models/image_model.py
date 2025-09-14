@@ -268,3 +268,55 @@ class DMCI(CompressionModel):
             "z_bpp": z_bits.sum() / num_pixels,
             "y_bpp": y_bits.sum() / num_pixels,
         }
+    
+    # ---------- NEW: differentiable entropy-only path ----------
+    def estimate_bpp(self, x: torch.Tensor, qp: int, return_components: bool = False):
+        """
+        Differentiable bitrate estimator.
+        Does NOT decode; returns bpp computed from hyper + spatial priors.
+
+        Args:
+            x:  (B,3,H,W), values in [0,1] (same convention you give DMCI.forward)
+            qp: integer index for the internal quant scales
+        Returns:
+            bpp (scalar tensor on x.device)
+            (optional) dict with 'z_bpp' and 'y_bpp'
+        """
+        # Same quant scales
+        curr_q_enc = self.q_scale_enc[qp:qp + 1, :, :, :]
+
+        # Encoder & hyperprior
+        y     = self.enc(x, curr_q_enc)                      # (B, N, H/8, W/8)
+        y_pad = self.pad_for_y(y)                            # pad alignment
+        z     = self.hyper_enc(y_pad)                        # (B, zC, ...)
+
+        # z quantization (STE) and z bits
+        z_hat = self.quantize(z, method="ste")
+        qp_tensor = torch.tensor(qp, device=x.device, dtype=torch.int32)
+        z_bits = self.get_z_bits(z_hat, self.bit_estimator_z, qp_tensor)
+
+        # Hyper decode & spatial prior (no decode)
+        params = self.hyper_dec(z_hat)
+        params = self.y_prior_fusion(params)
+        _, _, yH, yW = y.shape
+        params = params[:, :, :yH, :yW].contiguous()
+
+        # Differentiable y “compression” (no arithmetic coding here)
+        # We keep the returned y_hat but do NOT pass it to the image decoder
+        _, y_bits = self.compress_prior_4x_diff(
+            y, params, self.y_spatial_prior_reduction,
+            self.y_spatial_prior_adaptor_1, self.y_spatial_prior_adaptor_2,
+            self.y_spatial_prior_adaptor_3, self.y_spatial_prior)
+
+        # Bits/pixel
+        B, _, H, W = x.shape
+        num_pixels = B * H * W
+        total_bits = z_bits.sum() + y_bits.sum()
+        bpp = total_bits / num_pixels
+
+        if return_components:
+            return bpp, {
+                "z_bpp": z_bits.sum() / num_pixels,
+                "y_bpp": y_bits.sum() / num_pixels,
+            }
+        return bpp
