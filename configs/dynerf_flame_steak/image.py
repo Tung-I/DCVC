@@ -1,26 +1,26 @@
 _base_ = '../default.py'
-expname = 'sear_steak_image_l'
+expname = 'flame_steak_image'
 ckptname = None
-wandbprojectname = 'canerf_sear_steak_image'
-basedir = '/home/tungichen_umass_edu/DCVC/logs/dynerf_sear_steak'
+wandbprojectname = 'ablation_flame_steak_image'
+basedir = '/home/tungichen_umass_edu/DCVC/logs/dynerf_flame_steak'
 
 data = dict(
-	datadir='/home/tungichen_umass_edu/DCVC/data/n3d/sear_steak/llff/',
+	datadir='/home/tungichen_umass_edu/DCVC/data/n3d/flame_steak/llff/',
 	dataset_type='llff',
  	ndc=True,
-	xyz_min = [-1.4,  -1.4, -1.0],
-	xyz_max = [ 1.4,   1.4,  1.0],
+	xyz_min = [-1.4,  -1.4, -0.6],
+	xyz_max = [ 1.4,   1.4,  0.6],
 	load2gpu_on_the_fly=True,
     test_frames = [0],
-	factor = 2,
+	factor = 3,
 )
 fine_model_and_render = dict(
-	num_voxels=320**3,  #
-	num_voxels_base=320**3,  #
+	num_voxels=210**3,
+	num_voxels_base=210**3,
 	k0_type='PlaneGrid',
-	rgbnet_dim=24,
-    rgbnet_width=192,  #
-    mpi_depth=200,
+	rgbnet_dim=36,
+    rgbnet_width=128,
+    mpi_depth=192,
 	stepsize=1,
 	fast_color_thres = 1.0/256.0/80,
     viewbase_pe = 2,
@@ -49,7 +49,6 @@ fine_train = dict(
     lrate_rgbnet=1e-3,            # lr of the mlp to preduct view-dependent color
     save_every = 2000,          # save every save_every steps
     save_after = 10000,          # save after save_after steps
-    val_every = 1000,          # validate every val_every steps
 )
 
 coarse_train = dict(

@@ -1,7 +1,7 @@
 _base_ = '../default.py'
-expname = 'dcvc_qp48_gradbpp'
+expname = 'dcvc_qp24_flatten'
 ckptname = 'sear_steak_image'
-wandbprojectname = 'sear_steak_image_bpp'
+wandbprojectname = 'ablation_sear_steak_image'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/dynerf_sear_steak'
 
 data = dict(
@@ -20,7 +20,7 @@ fine_model_and_render = dict(
 	k0_type='PlaneGrid',
 	rgbnet_dim=36,
     rgbnet_width=128,
-    mpi_depth=280,
+    mpi_depth=256,
 	stepsize=1,
 	fast_color_thres = 1.0/256.0/80,
     viewbase_pe = 2,
@@ -36,7 +36,7 @@ codec = dict(
     use_sandwich = False,  
     convert_ycbcr=True,
     freeze_dcvc=True,
-    dcvc_qp = 48,
+    dcvc_qp = 24,
     quant_mode = "global",
     global_range = (-20.0, 20.0),
     packing_mode = "flatten",
@@ -46,8 +46,6 @@ codec = dict(
     quality=None,
     codec_refresh_k = 32,
     refresh_trigger_eps = 0.0,  # e.g., 0.05 to refresh early if planes drift >5% L2
-    gradbpp = True,  # enable entropy estimation for bpp loss
-    bpp_refresh_k = 1,   # refresh bpp estimation every k steps
 )
 
 _k = 1
@@ -56,11 +54,11 @@ fine_train = dict(
 	N_iters=30000,
 	N_rand=5000,   
 	tv_every=1e6,                   # count total variation loss every tv_every step
-    tv_after=10000,                   # count total variation loss from tv_from step
-    tv_before=30000,                  # count total variation before the given number of iterations
-    tv_dense_before=30000,            # count total variation densely before the given number of iterations
-    weight_tv_density=1e-5,        # weight of total variation loss of density voxel grid
-	weight_tv_k0=1e-4,
+    tv_after=1e6,                   # count total variation loss from tv_from step
+    tv_before=-1,                  # count total variation before the given number of iterations
+    tv_dense_before=1e6,            # count total variation densely before the given number of iterations
+    weight_tv_density=0,        # weight of total variation loss of density voxel grid
+	weight_tv_k0=0,
 	weight_l1_loss=None,
 	weight_distortion = 0.0,
 	pg_scale=[],
@@ -75,6 +73,7 @@ fine_train = dict(
     lambda_max = 768,
 	save_every = 2000,          # save every save_every steps
     save_after = 10000,          # save after save_after steps
+    use_bpp = False,
 )
 
 coarse_train = dict(

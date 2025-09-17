@@ -94,9 +94,119 @@ def debug_print_param_status(model: torch.nn.Module, optimizer: torch.optim.Opti
     #         print("     •", n)
     print("====================================================\n")
 
+def create_optimizer_sandwich(model, cfg_train, global_step,
+                                                   codec_params=[], sandwich_params=[]):
+    """
+    Build optimizer groups for TriPlane (density, k0) and rgbnet, and (optionally)
+    sandwich modules. DCVC core is frozen, sandwich stays trainable.
+    """
+
+    def _as_list(x):
+        if x is None: return []
+        if isinstance(x, torch.nn.Parameter): return [x]
+        if isinstance(x, torch.nn.Module):    return list(x.parameters())
+        try: return list(x)
+        except TypeError: return []
+
+    # learning-rate schedule
+    decay_steps  = getattr(cfg_train, 'lrate_decay', 20) * 1000
+    decay_factor = (0.1 ** (global_step / decay_steps)) if decay_steps > 0 else 1.0
+    def lr_of(name, default=0.0):
+        base = getattr(cfg_train, f'lrate_{name}', default)
+        return float(base) * decay_factor
+
+    skip_zero = set(getattr(cfg_train, 'skip_zero_grad_fields', []))
+    param_groups = []
+
+    # --- 0) DCVC: freeze ONLY the core; leave sandwich alone ---
+    if hasattr(model, 'codec'):
+        codec = model.codec
+        frozen = 0
+        if hasattr(codec, "core_parameters"):
+            for p in codec.core_parameters():
+                p.requires_grad_(False); frozen += 1
+        else:
+            # Fallback: freeze everything except known sandwich prefixes
+            S_PREFIX = ("pre_unet", "pre_mlp", "bound_pre",
+                        "post_unet", "post_mlp", "bound_post")
+            for n, p in codec.named_parameters():
+                if n.startswith(S_PREFIX):
+                    continue
+                p.requires_grad_(False); frozen += 1
+        # (optional) print or log `frozen` if you want
+
+    # --- 1) RGBNet group ---
+    lr_rgb = lr_of('rgbnet', 0.0)
+    if hasattr(model, 'rgbnet') and isinstance(model.rgbnet, torch.nn.Module):
+        rgb_params = _as_list(model.rgbnet)
+        if lr_rgb > 0 and len(rgb_params):
+            param_groups.append({
+                'params': rgb_params, 'lr': lr_rgb,
+                'skip_zero_grad': ('rgbnet' in skip_zero)
+            })
+            for p in rgb_params: p.requires_grad_(True)
+        else:
+            for p in rgb_params: p.requires_grad_(False)
+
+    # --- 2) Per-frame TriPlane params (density, k0) ---
+    lr_den = lr_of('density', 0.0)
+    lr_k0  = lr_of('k0', 0.0)
+
+    for fid, dvgo in model.dvgos.items():
+        is_fixed = (int(fid) in getattr(model, 'fixed_frame', []))
+        # density
+        if hasattr(dvgo, 'density'):
+            p_den = _as_list(dvgo.density)
+            if not is_fixed and lr_den > 0 and len(p_den):
+                param_groups.append({
+                    'params': p_den, 'lr': lr_den,
+                    'skip_zero_grad': ('density' in skip_zero)
+                })
+                for p in p_den: p.requires_grad_(True)
+            else:
+                for p in p_den: p.requires_grad_(False)
+        # k0
+        if hasattr(dvgo, 'k0'):
+            p_k0 = _as_list(dvgo.k0)
+            if not is_fixed and lr_k0 > 0 and len(p_k0):
+                param_groups.append({
+                    'params': p_k0, 'lr': lr_k0,
+                    'skip_zero_grad': ('k0' in skip_zero)
+                })
+                for p in p_k0: p.requires_grad_(True)
+            else:
+                for p in p_k0: p.requires_grad_(False)
+
+    # --- 3) Sandwich group (always considered; on/off via LR) ---
+    lr_sw = lr_of('sandwich', 0.0)
+    sw_list = _as_list(sandwich_params)
+    if lr_sw > 0 and len(sw_list):
+        param_groups.append({
+            'params': sw_list, 'lr': lr_sw,
+            'skip_zero_grad': ('sandwich' in skip_zero)
+        })
+        for p in sw_list: p.requires_grad_(True)
+    else:
+        # If LR==0, keep them frozen
+        for p in sw_list: p.requires_grad_(False)
+
+    # Safety: dtype check
+    for gi, g in enumerate(param_groups):
+        plist = g['params']
+        if not isinstance(plist, (list, tuple)):
+            plist = list(plist)
+            g['params'] = plist
+        for p in plist:
+            if p.dtype != torch.float32:
+                raise RuntimeError(
+                    f"Optimizer group {gi} contains {p.dtype} param {tuple(p.shape)}; must be float32."
+                )
+
+    return MaskedAdam(param_groups)
+
 
 def create_optimizer_or_freeze_model_dcvc_triplane(model, cfg_train, global_step,
-                                                   codec_params=[], sandwich_params=None):
+                                                   codec_params=[], sandwich_params=[]):
     """
     Build optimizer groups for TriPlane (density, k0) and rgbnet, while freezing DCVC.
     Converts all parameter iterables to concrete lists to avoid generator exhaustion.
@@ -174,9 +284,6 @@ def create_optimizer_or_freeze_model_dcvc_triplane(model, cfg_train, global_step
             else:
                 for p in p_k0: p.requires_grad_(False)
 
-    # --- 3) (Optional) sandwich/DCVC head — only if you actually want them ---
-    # Keep these OFF by default given your goal
-    # If you later want them, ensure you pass pre-filtered lists (already requires_grad=True)
     if sandwich_params:
         lr_sw = lr_of('sandwich', 0.0)
         if lr_sw > 0:

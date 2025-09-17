@@ -106,7 +106,7 @@ class STE_DVGO_Video(nn.Module):
         d_bpp = d_bpp if (torch.is_tensor(d_bpp) and d_bpp.device == rays_o.device) \
                 else torch.tensor(float(d_bpp or 0.0), device=rays_o.device)
 
-        avg_bpp = (sum(bpps_planes) + d_bpp) / 4.0
+        avg_bpp = (sum(bpps_planes) + d_bpp)
 
         psnr_by_axis = {ax: (self._codec_cache_psnr[ax][frameid]
                              if (torch.is_tensor(self._codec_cache_psnr[ax][frameid]) and

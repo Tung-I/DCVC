@@ -9,8 +9,9 @@ DCVC-integrated tri-planes, multi-GPU, AMP, etc.)."""
 # ------------------------------------------------------------------------------
 from __future__ import annotations
 import os, time, copy, random, argparse
+import shutil, json, glob
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Callable
+from typing import Dict, List, Tuple, Callable, Optional
 
 import torch
 import torch.nn.functional as F
@@ -101,6 +102,11 @@ class Trainer:
     _psnr_buffer: List[float] = field(default_factory=list, init=False)
     _tic: float = field(default_factory=time.time, init=False)
 
+    # in Trainer dataclass fields (or set in __post_init__)
+    _best_val_psnr: float = field(default_factory=lambda: float("-inf"), init=False)
+    _best_val_step: int   = field(default=-1, init=False)
+
+
     # -------------------------------------------------------------------------
     # Construction
     # -------------------------------------------------------------------------
@@ -110,6 +116,13 @@ class Trainer:
         if WANDB:
             wandb.watch(self.model, log="all", log_freq=self.args.i_print)
         self._build_rays()
+
+        # validation cadence (add to cfg.fine_train if you like; default here)
+        self.val_every = int(getattr(self.cfg.fine_train, "val_every", 1000))
+
+        # where checkpoints are being written by your model
+        self.out_dir = os.path.join(self.cfg.basedir, self.cfg.expname)
+        os.makedirs(self.out_dir, exist_ok=True)
 
     def _build_model_and_opt(self):
         xyz_min = torch.tensor(self.cfg.data.xyz_min)
@@ -252,40 +265,150 @@ class Trainer:
 
         loss += self.cfg.fine_train.weight_l1_loss * self.model.compute_k0_l1_loss(fid_batch)
         return loss
-
+    
     # -------------------------------------------------------------------------
     # Training loop
     # -------------------------------------------------------------------------
     def train(self):
         cfg_t = self.cfg.fine_train
-        os.makedirs(os.path.join(self.cfg.basedir, self.cfg.expname), exist_ok=True)
-        for step in trange(1, cfg_t.N_iters+1):
-            if (step+500) % 1000 == 0:
+        os.makedirs(self.out_dir, exist_ok=True)
+        for step in trange(1, cfg_t.N_iters + 1):
+            if (step + 500) % 1000 == 0:
                 self.model.update_occupancy_cache()
             self._progressive_grow(step)
             loss = self._train_step(step)
 
             # LR decay
-            decay = 0.1 ** (1 / (cfg_t.lrate_decay*1000))
-            for g in self.optimizer.param_groups: g['lr'] *= decay
+            decay = 0.1 ** (1 / (cfg_t.lrate_decay * 1000))
+            for g in self.optimizer.param_groups:
+                g['lr'] *= decay
 
+            # --- print/log ---
             if step % self.args.i_print == 0 or step == 1:
-                dt   = time.time() - self._tic
-                psnr = np.mean(self._psnr_buffer); self._psnr_buffer.clear()
+                dt = time.time() - self._tic
+                psnr = float(np.mean(self._psnr_buffer)); self._psnr_buffer.clear()
                 tqdm.write(f'[step {step:6d}] loss {loss.item():.4e}  psnr {psnr:5.2f}  '
-                           f'elapsed {dt/3600:02.0f}:{dt/60%60:02.0f}:{dt%60:02.0f}')
+                        f'elapsed {dt/3600:02.0f}:{dt/60%60:02.0f}:{dt%60:02.0f}')
                 if WANDB:
                     wandb.log({
-                        "train/psnr": float(psnr),
+                        "train/psnr": psnr,
                         "train/loss": float(loss.item()),
                         "time/elapsed_s": dt,
                     }, step=step)
 
-                # raise Exception("Stop here")
+            # --- periodic validation on test scene ---
+            if (step % self.val_every == 0) or (step == cfg_t.N_iters):
+                # current trainer uses single-frame training for DCVCImageCodec
+                uniq_fids = torch.unique(self.data['frame_ids']).cpu().numpy().tolist()
+                fid = int(uniq_fids[0]) if len(uniq_fids) else 0
 
+                val_psnr = self._eval_test_psnr(fid)
+                if val_psnr is not None:
+                    if WANDB:
+                        wandb.log({"val/psnr": val_psnr}, step=step)
+                    tqdm.write(f'[step {step:6d}] VALIDATION  psnr {val_psnr:5.2f} dB')
+
+                    # best-checkpointing
+                    if val_psnr > self._best_val_psnr:
+                        self._best_val_psnr = val_psnr
+                        self._best_val_step = step
+                        tqdm.write(f'  ➜ new BEST val psnr {val_psnr:.3f} at step {step}; saving snapshot…')
+                        self._save_best_snapshot(step, val_psnr)
+
+            # --- (optional) periodic normal checkpointing, if you still want it ---
             if step % cfg_t.save_every == 0 and step >= cfg_t.save_after:
                 self.model.save_checkpoints()
+
         print('Training finished.')
+        if self._best_val_step >= 0:
+            print(f'Best validation PSNR {self._best_val_psnr:.3f} dB at step {self._best_val_step}. '
+                f'Checkpoint copied under {os.path.join(self.out_dir, "best_psnr")}.')
+
+    # -------------------------------------------------------------------------
+    # helper to render a single view and compute PSNR
+    # -------------------------------------------------------------------------
+
+    @torch.no_grad()
+    def _render_one_view_psnr(self, H, W, K, c2w, gt, frame_id, mask=None):
+        # rays
+        rays_o, rays_d, viewdirs = dvgo.get_rays_of_a_view(
+            H, W, K, torch.as_tensor(c2w),
+            self.cfg.data.ndc, inverse_y=self.cfg.data.inverse_y,
+            flip_x=self.cfg.data.flip_x, flip_y=self.cfg.data.flip_y
+        )
+        rays_o = rays_o.flatten(0, -2); rays_d = rays_d.flatten(0, -2); viewdirs = viewdirs.flatten(0, -2)
+
+        # chunked render (same chunk size as your eval)
+        keys = ['rgb_marched', 'depth', 'alphainv_last']
+        chunks = [
+            {k: v for k, v in self.model(ro, rd, vd, frame_ids=frame_id,
+                                         global_step=-1,
+                                        near=self.data['near'], far=self.data['far'],
+                                        bg=1 if self.cfg.data.white_bkgd else 0,
+                                        rand_bkgd=self.cfg.data.rand_bkgd,
+                                        stepsize=self.cfg.fine_model_and_render.stepsize,
+                                        inverse_y=self.cfg.data.inverse_y,
+                                        flip_x=self.cfg.data.flip_x, flip_y=self.cfg.data.flip_y
+                                        ).items() if k in keys}
+            for ro, rd, vd in zip(rays_o.split(150480, 0),
+                                rays_d.split(150480, 0),
+                                viewdirs.split(150480, 0))
+        ]
+        rgb = torch.cat([c['rgb_marched'] for c in chunks]).reshape(H, W, -1).cpu().numpy()
+
+
+        if mask is not None:
+            m = (mask[..., 0] > 0.5)
+            mse = np.mean(np.square(rgb[m] - gt[m]))
+        else:
+            mse = np.mean(np.square(rgb - gt))
+        psnr = -10.0 * np.log10(max(mse, 1e-12))
+        return float(psnr)
+    
+    @torch.no_grad()
+    def _eval_test_psnr(self, frame_id: int) -> Optional[float]:
+        # collect indices of this frame within i_test
+        i_test = self.data['i_test']
+        frame_ids = self.data['frame_ids']
+        mask = (frame_ids == frame_id)[i_test]
+
+        if isinstance(mask, torch.Tensor):
+            mask = mask.numpy()
+        t_test = np.array(i_test)[mask]
+        if len(t_test) == 0:
+            return None  # no test views for this frame
+
+        HW = self.data['HW']; Ks = self.data['Ks']; poses = self.data['poses']
+        imgs = self.data['images']
+        masks = self.data.get('masks', None)
+
+        # make frame_id become tensor
+        frame_id = torch.tensor([frame_id])
+        psnrs = []
+        for idx in t_test:
+            H, W = HW[idx]
+            K = Ks[idx]
+            c2w = poses[idx]
+            gt = imgs[idx].cpu().numpy()
+            ms = None if masks is None else masks[idx]
+            psnrs.append(self._render_one_view_psnr(H, W, K, c2w, gt, frame_id, mask=ms))
+        return float(np.mean(psnrs))
+
+    def _save_best_snapshot(self, step: int, val_psnr: float):
+        # first save current checkpoints the usual way
+        self.model.save_checkpoints()
+
+        best_dir = os.path.join(self.out_dir, "best_psnr")
+        os.makedirs(best_dir, exist_ok=True)
+
+        # copy all tar files that the model just wrote
+        for p in glob.glob(os.path.join(self.out_dir, "*.tar")):
+            shutil.copy2(p, os.path.join(best_dir, os.path.basename(p)))
+
+        # also keep a note
+        meta = {"best_step": step, "best_val_psnr": val_psnr}
+        with open(os.path.join(best_dir, "best_meta.json"), "w") as f:
+            json.dump(meta, f, indent=2)
 
 # ------------------------------------------------------------------------------
 # 5. Entry point

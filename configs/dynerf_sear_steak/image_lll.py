@@ -12,15 +12,15 @@ data = dict(
 	xyz_max = [ 1.4,   1.4,  1.0],
 	load2gpu_on_the_fly=True,
     test_frames = [0],
-	factor = 1,
+	factor = 2,
 )
 fine_model_and_render = dict(
 	num_voxels=192**3,  #
 	num_voxels_base=192**3,  #
 	k0_type='PlaneGrid',
-	rgbnet_dim=48,
-    rgbnet_width=196,  #
-    mpi_depth=256,
+	rgbnet_dim=36,
+    rgbnet_width=192,  #
+    mpi_depth=200,
 	stepsize=1,
 	fast_color_thres = 1.0/256.0/80,
     viewbase_pe = 2,
@@ -49,6 +49,7 @@ fine_train = dict(
     lrate_rgbnet=1e-3,            # lr of the mlp to preduct view-dependent color
     save_every = 2000,          # save every save_every steps
     save_after = 10000,          # save after save_after steps
+    val_every = 1000,          # validate every val_every steps
 )
 
 coarse_train = dict(

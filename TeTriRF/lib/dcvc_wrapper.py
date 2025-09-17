@@ -93,7 +93,7 @@ class DCVCImageCodec(torch.nn.Module):
             else:
                 enc_result = self.codec_wrapper.compress(y_half, self.qp)
                 # bits = self.codec_wrapper.measure_size(enc_result, self.qp)
-                dec_result  = self.codec_wrapper.decompress(enc_result)
+                dec_result  = self.coBoundedProjectordec_wrapper.decompress(enc_result)
                 x_hat_half = dec_result[..., :H2p, :W2p]
 
         # Exit AMP, cast to fp32 for numerics and to match TriPlane later
@@ -373,7 +373,7 @@ class DCVCSandwichImageCodec(torch.nn.Module):
         eps = cfg_dcvc.eps
         mlp_layers = cfg_dcvc.mlp_layers
         convert_ycbcr = cfg_dcvc.convert_ycbcr
-        packing_mode = cfg_dcvc.packing_mode
+
         # encoder: C -> 3, same spatial size
         self.pre_processor = SmallUNet(in_ch=in_channels, out_ch=3, base=unet_pre_base)
         self.mlp_pre   = create_mlp(in_channels, 3, mlp_layers)

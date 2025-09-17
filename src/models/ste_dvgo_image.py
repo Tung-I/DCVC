@@ -98,7 +98,7 @@ class STE_DVGO_Image(torch.nn.Module):
             dens_now = self._gather_density_one_frame(frameid)
             dens_bpp = self.codec.estimate_bpp_density_only(dens_now)
 
-            avg_bpp = (sum(bpps_planes) + dens_bpp) / 4.0  # 3 planes + density
+            avg_bpp = (sum(bpps_planes) + dens_bpp)  # 3 planes + density
 
             # For logging, still report cached PSNR (detached)
             psnr_by_axis = {ax: self._codec_cache_psnr[ax] for ax in ('xy','xz','yz')}
@@ -116,7 +116,7 @@ class STE_DVGO_Image(torch.nn.Module):
             bpps_planes = [_as_scalar(b) for b in bpps_planes]
             dens_bpp    = _as_scalar(dens_bpp)
 
-            avg_bpp = (sum(bpps_planes) + dens_bpp) / 4.0  # 3 planes + density
+            avg_bpp = (sum(bpps_planes) + dens_bpp)  # 3 planes + density
 
             psnr_by_axis = {ax: self._codec_cache_psnr[ax] for ax in ('xy','xz','yz')}
             psnr_by_axis['density'] = self._dens_cache_psnr

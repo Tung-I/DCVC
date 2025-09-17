@@ -1,7 +1,7 @@
 _base_ = '../default.py'
 expname = 'sear_steak_image'
 ckptname = None
-wandbprojectname = 'canerf_sear_steak_image'
+wandbprojectname = 'ablation_sear_steak_image'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/dynerf_sear_steak'
 
 data = dict(

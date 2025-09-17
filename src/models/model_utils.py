@@ -5,7 +5,7 @@ import numpy as np
 import torch.nn.functional as F
 import math
 import cv2
-from typing import Tuple
+from typing import Tuple, Optional
 
 DCVC_ALIGN = 32
 
@@ -33,6 +33,54 @@ def jpeg_roundtrip_color(img_f01_bgr: np.ndarray, quality: int) -> Tuple[np.ndar
         raise RuntimeError("cv2.imdecode failed")
     return to_float01_from_uint8(dec), bits
 
+def sandwich_planes_to_rgb(
+    x01: torch.Tensor,                            # [T,C,H,W] in [0,1]
+    pre_unet: torch.nn.Module,                   # SmallUNet(C->3)
+    pre_mlp: torch.nn.Module,                    # MLP 1x1 (C->3)
+    bound_pre: torch.nn.Module,                  # BoundedProjector(3)
+    align: int,                                  # DCVC_ALIGN
+) -> Tuple[torch.Tensor, Tuple[int,int]]:
+    """
+    Learned pack: [T,C,H,W] -> y_pad [T,3,Hp,Wp], returns orig (H, W).
+    """
+    assert x01.dim() == 4, f"expected [T,C,H,W], got {x01.shape}"
+    T, C, H, W = x01.shape
+
+    # run per frame; keep it batched over T
+    y3 = pre_mlp(x01) + pre_unet(x01)           # [T,3,H,W]
+    y01 = bound_pre(y3)                          # [T,3,H,W] in [0,1]
+
+    # pad to multiples of align
+    pad_h = (align - H % align) % align
+    pad_w = (align - W % align) % align
+    if pad_h or pad_w:
+        y_pad = F.pad(y01, (0, pad_w, 0, pad_h), mode="replicate")
+    else:
+        y_pad = y01
+    return y_pad, (H, W)
+
+
+def sandwich_rgb_to_planes(
+    y_hat: torch.Tensor,                          # [T,3,Hp,Wp], decoder output (float in [0,1])
+    orig_size: Tuple[int,int],                    # (H, W) before pad (from sandwich_planes_to_rgb)
+    post_unet: torch.nn.Module,                  # SmallUNet(3->C)
+    post_mlp: torch.nn.Module,                   # MLP 1x1 (3->C)
+    post_bound: Optional[torch.nn.Module] = None # optional BoundedProjector(C)
+) -> torch.Tensor:
+    """
+    Learned unpack: crop pad -> postprocess to [T,C,H,W] (ideally still in [0,1]).
+    """
+    H, W = orig_size
+    y = y_hat[..., :H, :W]                       # [T,3,H,W]
+
+    x_rec = post_mlp(y) + post_unet(y)           # [T,C,H,W]
+    if post_bound is not None:
+        x_rec = post_bound(x_rec)                # keep it in [0,1] if you prefer
+    else:
+        # safe clamp for stability since codec can introduce tiny overshoots
+        x_rec = x_rec.clamp_(0.0, 1.0)
+    return x_rec
+
 def pack_planes_to_rgb(x, align=DCVC_ALIGN, mode: str = "flatten"):
     """
     x : [T, C, H, W], C ∈ {4, 12}
@@ -48,16 +96,13 @@ def pack_planes_to_rgb(x, align=DCVC_ALIGN, mode: str = "flatten"):
         raise ValueError(f"pack: unknown mode '{mode}'")
 
     if mode == "mosaic":
-        if C == 4:
-            mono = F.pixel_shuffle(x, 2)              # [T,1,2H,2W]
-            y = mono.repeat(1, 3, 1, 1)               # [T,3,2H,2W]
-        elif C == 12:
+        if C == 12:
             # 3 groups of 4 channels each → pixel-shuffle each group → concat as RGB
             xg = x.view(T, 3, 4, H, W)
             tiles = [F.pixel_shuffle(xg[:, g], 2) for g in range(3)]  # each [T,1,2H,2W]
             y = torch.cat(tiles[::-1], dim=1)         # [T,3,2H,2W]  (B,G,R)→RGB-ish
         else:
-            raise ValueError(f"pack: C must be 4 or 12 (got {C})")
+            raise ValueError(f"pack: C must be 12 (got {C})")
 
     else:  # mode == "flatten"
         if C == 12:
@@ -65,12 +110,8 @@ def pack_planes_to_rgb(x, align=DCVC_ALIGN, mode: str = "flatten"):
             # [T,12,H,W] -> [T,1,3H,4W]
             mono = rearrange(x, 'T (r c) H W -> T 1 (r H) (c W)', r=3, c=4)
             y = mono.repeat(1, 3, 1, 1)               # [T,3,3H,4W]
-        elif C == 4:
-            # With 4 channels we can only form a 2×2 grid; same as pixel_shuffle→mono
-            mono = F.pixel_shuffle(x, 2)              # [T,1,2H,2W]
-            y = mono.repeat(1, 3, 1, 1)               # [T,3,2H,2W]
         else:
-            raise ValueError(f"pack(flatten): C must be 4 or 12 (got {C})")
+            raise ValueError(f"pack(flatten): C must be 12 (got {C})")
 
     # pad to multiples of `align`
     _, _, h2, w2 = y.shape
@@ -95,17 +136,13 @@ def unpack_rgb_to_planes(y_pad, C, orig_size, mode: str = "flatten"):
     y = y_pad[..., :H2, :W2]                     # remove padding
 
     if mode == "mosaic":
-        if C == 4:
-            mono = y[:, :1]                      # any channel
-            x = F.pixel_unshuffle(mono, 2)       # [T,4,H,W]
-            return x
-        elif C == 12:
+        if C == 12:
             # invert the mosaic (split RGB, unshuffle, concat)
             b, g, r = y.split(1, dim=1)
             blocks = [F.pixel_unshuffle(ch, 2) for ch in (r, g, b)]
             return torch.cat(blocks, dim=1)      # [T,12,H,W]
         else:
-            raise ValueError(f"unpack(mosaic): C must be 4 or 12 (got {C})")
+            raise ValueError(f"unpack(mosaic): C must be 12 (got {C})")
 
     else:  # mode == "flatten"
         if C == 12:
@@ -118,13 +155,8 @@ def unpack_rgb_to_planes(y_pad, C, orig_size, mode: str = "flatten"):
             W = W2 // 4
             x = rearrange(mono, 'T 1 (r H) (c W) -> T (r c) H W', r=3, c=4, H=H, W=W)  # [T,12,H,W]
             return x
-        elif C == 4:
-            # flatten with C=4 was 2×2 mono; invert as usual
-            mono = y[:, :1]                      # [T,1,2H,2W]
-            x = F.pixel_unshuffle(mono, 2)       # [T,4,H,W]
-            return x
         else:
-            raise ValueError(f"unpack(flatten): C must be 4 or 12 (got {C})")
+            raise ValueError(f"unpack(flatten): C must be 12 (got {C})")
 
 def normalize_planes(
         seq, 

@@ -200,27 +200,28 @@ class Trainer:
             torch.cuda.empty_cache()
 
     def qp_to_lambda(self):
-        # assert that only one of dcvc_qp and jpeg.quality is set
-        dcvc_qp = self.cfg.codec.dcvc_qp
-        quality = self.cfg.codec.quality
-        assert (dcvc_qp is None) != (quality is None)
-        lambda_min = self.cfg.fine_train.lambda_min
-        lambda_max = self.cfg.fine_train.lambda_max
+        # # assert that only one of dcvc_qp and jpeg.quality is set
+        # dcvc_qp = self.cfg.codec.dcvc_qp
+        # quality = self.cfg.codec.quality
+        # assert (dcvc_qp is None) != (quality is None)
+        # lambda_min = self.cfg.fine_train.lambda_min
+        # lambda_max = self.cfg.fine_train.lambda_max
 
 
-        if dcvc_qp is not None:
-            lambda_val = math.log(lambda_min) + dcvc_qp / (64 - 1) * (
-                    math.log(lambda_max) - math.log(lambda_min))
-            lambda_val = math.pow(math.e, lambda_val)
-        elif quality is not None:
-            qp = quality
-            lambda_val = math.log(lambda_min) + qp / (100 - 1) * (
-                    math.log(lambda_max) - math.log(lambda_min))
-            lambda_val = math.pow(math.e, lambda_val)
-        else:
-            raise NotImplementedError("Only DCVC and JPEG codecs are supported.")
+        # if dcvc_qp is not None:
+        #     lambda_val = math.log(lambda_min) + dcvc_qp / (64 - 1) * (
+        #             math.log(lambda_max) - math.log(lambda_min))
+        #     lambda_val = math.pow(math.e, lambda_val)
+        # elif quality is not None:
+        #     qp = quality
+        #     lambda_val = math.log(lambda_min) + qp / (100 - 1) * (
+        #             math.log(lambda_max) - math.log(lambda_min))
+        #     lambda_val = math.pow(math.e, lambda_val)
+        # else:
+        #     raise NotImplementedError("Only DCVC and JPEG codecs are supported.")
 
-        return lambda_val
+        # return lambda_val
+        return 0.001
 
     # -------------------------------------------------------------------------
     # Main step
@@ -251,7 +252,10 @@ class Trainer:
 
         rec_loss, bpp_loss = self._compute_loss(render, target, step, fid_b, avg_bpp)
         self.optimizer.zero_grad(set_to_none=True)
-        loss = rec_loss + bpp_loss
+        if self.cfg.fine_train.use_bpp:
+            loss = rec_loss + bpp_loss
+        else:
+            loss = rec_loss
         loss.backward()
 
         # Total-variation regularization on voxel grids
@@ -306,7 +310,7 @@ class Trainer:
             if step % self.args.i_print == 0 or step == 1:
                 dt   = time.time() - self._tic
                 psnr = np.mean(self._psnr_buffer); self._psnr_buffer.clear()
-                tqdm.write(f'[step {step:6d}] loss {loss.item():.4e}  psnr {psnr:5.2f} '
+                tqdm.write(f'[step {step:6d}] loss {loss.item():.4e}  psnr {psnr:5.2f} bpp {avg_bpp:.4f}'
                            f'elapsed {dt/3600:02.0f}:{dt/60%60:02.0f}:{dt%60:02.0f}')
                 
                 # raise Exception("Stop here")
@@ -319,8 +323,8 @@ class Trainer:
                     "train/density_psnr": float(plane_psnr_dict['density']),
                     # "train/yz_plane_psnr": float(plane_psnr_dict['yz']),
                     "train/rec_loss": float(rec_loss.item()),
-                    "train/bpp_loss": float(bpp_loss.item()),
-                    "train/total_bpp": float(avg_bpp),
+                    # "train/bpp_loss": float(bpp_loss.item()),
+                    "train/bpp": float(avg_bpp),
                     "time/elapsed_s": dt,
                 }, step=step)
 
