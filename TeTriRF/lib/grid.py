@@ -268,7 +268,7 @@ class PlaneGrid(nn.Module):
 See TensoRF: Tensorial Radiance Fields (https://arxiv.org/abs/2203.09517)
 '''
 class TensoRFGrid(nn.Module):
-    def __init__(self, channels, world_size, xyz_min, xyz_max, config):
+    def __init__(self, channels, world_size, xyz_min, xyz_max, config, residual_mode=False):
         super(TensoRFGrid, self).__init__()
         self.scale = 4
         self.channels = channels
@@ -293,7 +293,7 @@ class TensoRFGrid(nn.Module):
             self.f_vec = nn.Parameter(torch.ones([R+R+Rxy, channels]))
             nn.init.kaiming_uniform_(self.f_vec, a=np.sqrt(5))
 
-    def forward(self, xyz,dir=None):
+    def forward(self, xyz, dir=None, center=None):
         '''
         xyz: global coordinates to query
         '''

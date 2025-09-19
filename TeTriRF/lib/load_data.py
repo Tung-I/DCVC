@@ -9,7 +9,7 @@ import ipdb
 import tqdm
 import torch
 
-def load_data(args):
+def load_data(args, split="train"):
 
     K, depths = None, None
     near_clip = None
@@ -85,63 +85,66 @@ def load_data(args):
         if not hasattr(args, 'spherify'):
             args.spherify = False
 
-        dataset = Blender_Dataset(args.datadir, factor = args.factor, frameids = args.frame_ids, test_views = args.test_frames, spherify = args.spherify)
-        def my_collate_fn(batch):
-            # Separate the data and labels from each sample in the batch
-            assert len(batch) ==1
-            item = batch[0]
-            data1 = item[0] 
-            data2 = item[1] 
-            data3 = item[2] 
-            data4 = item[3] 
+        dataset = Blender_Dataset(
+            args.datadir,
+            factor=args.factor,
+            frameids=args.frame_ids,
+            test_views=args.test_frames,
+            spherify=False,     # DVGO: no spherify for Blender
+            split=split
+        )
 
-            # Return the collated data and labels as a single batch
-            return data1, data2, data3, data4
-        train_dataloader = DataLoader(dataset, batch_size=1,num_workers = 12, shuffle=False, collate_fn = my_collate_fn)
+        def my_collate_fn(batch):
+            assert len(batch) == 1
+            return batch[0]  # (images, poses, render_poses, i_test)
+
+        train_dataloader = DataLoader(
+            dataset, batch_size=1, num_workers=12, shuffle=False, collate_fn=my_collate_fn
+        )
 
         frame_ids = []
         res_images = []
         res_poses = []
         res_render_poses = []
-   
-        for i, data in enumerate(train_dataloader):
-            images_t, poses_t, render_poses_t, i_test_t = data
-            P = images_t.shape[0]  # number of views for one frame index
+
+        for i, (images_t, poses_t, render_poses_t, i_test_t) in enumerate(train_dataloader):
+            P = images_t.shape[0]  # number of views
             res_images.append(images_t)
             res_poses.append(poses_t)
             res_render_poses.append(render_poses_t)
-            frame_ids.append(torch.ones(P, device='cpu')*args.frame_ids[i])
+            frame_ids.append(torch.ones(P, device='cpu') * args.frame_ids[i])
 
-        res_images = np.concatenate(res_images,axis=0)
-        res_poses = np.concatenate(res_poses,axis=0)
-        res_render_poses = np.concatenate(res_render_poses,axis=0)
-        frame_ids = torch.cat(frame_ids).long()
+        res_images = np.concatenate(res_images, axis=0)
+        res_poses  = np.concatenate(res_poses,  axis=0)
+        res_render_poses = np.concatenate(res_render_poses, axis=0)
+        frame_ids = torch.cat(frame_ids).long()  # stay on CPU
 
         images = res_images
         render_poses = res_render_poses
         poses = res_poses
 
-        hwf = res_poses[0,:3,-1]
-        poses = res_poses[:,:3,:4]
-        print('Loaded llff', res_images.shape, res_render_poses.shape, hwf, args.datadir)
-        
+        # poses are [N,3,5] here
+        hwf = res_poses[0, :3, -1]
+        poses = res_poses[:, :3, :4]
+        print('Loaded blender', res_images.shape, res_render_poses.shape, hwf, args.datadir)
+
+        # simple "use provided indices" policy: args.test_frames are view indices within the train split
         test_frames = []
-        for i in args.test_frames:  # args.test_frames is [0]
-            for j in range(i,int(res_images.shape[0]),P):
+        for i in args.test_frames:
+            for j in range(i, int(res_images.shape[0]), P):
                 test_frames.append(j)
-        #i_val = i_test
-        i_train = np.array([i for i in np.arange(int(res_images.shape[0])) if i not in test_frames])
-        i_test = test_frames
-        i_val = i_test
+
+        i_train = np.array([i for i in np.arange(int(res_images.shape[0])) if i not in test_frames], dtype=np.int64)
+        i_test  = np.array(test_frames, dtype=np.int64)
+        i_val   = i_test.copy()
 
         print('DEFINING BOUNDS')
         if args.ndc:
-            near = 0.
-            far = 1.
-        # else:
-        #     near = np.ndarray.min(bds) * .9
-        #     far = np.ndarray.max(bds) * 1.
+            near, far = 0.0, 1.0
+        else:
+            near, far = 2.0, 6.0
         print('NEAR FAR', near, far)
+
 
     ############################################
     elif args.dataset_type == 'immersive':
@@ -221,8 +224,6 @@ def load_data(args):
             irregular_shape=irregular_shape,
             frame_ids=frame_ids, masks=masks,
         )
-
-
 
     elif args.dataset_type == 'NHR':
         args.frame_ids.sort()

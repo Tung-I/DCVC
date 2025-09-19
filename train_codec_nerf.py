@@ -27,6 +27,9 @@ WANDB=True
 """
 Usage:
     python train_codec_nerf.py --config configs/dynerf_sear_steak/dcvc_qp0_ste.py --frame_ids 0 
+    python train_codec_nerf.py --config configs/dynerf_flame_steak/dcvc_qp48_flatten_flatten.py --frame_ids 0
+    python train_codec_nerf.py --config configs/blender_lego/jpeg_qp40_flatten_flatten.py --frame_ids 0
+
 """
 
 def build_arg_parser() -> argparse.ArgumentParser:

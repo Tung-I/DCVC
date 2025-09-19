@@ -81,82 +81,230 @@ def sandwich_rgb_to_planes(
         x_rec = x_rec.clamp_(0.0, 1.0)
     return x_rec
 
-def pack_planes_to_rgb(x, align=DCVC_ALIGN, mode: str = "flatten"):
+
+# ======================== FEATURE PLANES (C=12) ========================
+def pack_planes_to_rgb(x: torch.Tensor, align: int = DCVC_ALIGN, mode: str = "flatten"):
     """
-    x : [T, C, H, W], C ∈ {4, 12}
-    -> y_pad : [T, 3, H2_pad, W2_pad]   (H2_pad, W2_pad are multiples of `align`)
-       orig  : (H2_orig, W2_orig)
+    x : [T, C, H, W], C == 12
+    -> y_pad : [T, 3, H2_pad, W2_pad] ; orig : (H2_orig, W2_orig)
+
     modes:
-      - "mosaic"  (default): original behavior
-      - "flatten": for C=12, tile channels to a mono 3x4 grid [T,1,3H,4W], then repeat to RGB
-                   for C=4, this reduces to the same 2x2 mono as mosaic.
+      - "mosaic":   3 groups of 4 channels; F.pixel_shuffle(scale=2) per group -> concat as RGB
+      - "flat4":    3 groups of 4 channels; tile each group into 2x2 mono -> concat as RGB
+      - "flatten":  tile channels to a mono 3x4 grid -> repeat to RGB (legacy)
     """
     T, C, H, W = x.shape
-    if mode not in ("mosaic", "flatten"):
+    if mode not in ("mosaic", "flatten", "flat4"):
         raise ValueError(f"pack: unknown mode '{mode}'")
+    if C != 12:
+        raise ValueError(f"pack: C must be 12 (got {C})")
 
     if mode == "mosaic":
-        if C == 12:
-            # 3 groups of 4 channels each → pixel-shuffle each group → concat as RGB
-            xg = x.view(T, 3, 4, H, W)
-            tiles = [F.pixel_shuffle(xg[:, g], 2) for g in range(3)]  # each [T,1,2H,2W]
-            y = torch.cat(tiles[::-1], dim=1)         # [T,3,2H,2W]  (B,G,R)→RGB-ish
-        else:
-            raise ValueError(f"pack: C must be 12 (got {C})")
+        xg = x.view(T, 3, 4, H, W)
+        tiles = [F.pixel_shuffle(xg[:, g], 2) for g in range(3)]  # each [T,1,2H,2W]
+        y = torch.cat(tiles[::-1], dim=1)  # [T,3,2H,2W]  (B,G,R)→RGB-ish
+        h2, w2 = 2 * H, 2 * W
 
-    else:  # mode == "flatten"
-        if C == 12:
-            # Arrange 12 channels as a 3×4 tile grid (mono), then duplicate to 3 channels
-            # [T,12,H,W] -> [T,1,3H,4W]
-            mono = rearrange(x, 'T (r c) H W -> T 1 (r H) (c W)', r=3, c=4)
-            y = mono.repeat(1, 3, 1, 1)               # [T,3,3H,4W]
-        else:
-            raise ValueError(f"pack(flatten): C must be 12 (got {C})")
+    elif mode == "flat4":
+        # Tile each 4-ch group as 2x2 mono and map to one RGB channel
+        xg = x.view(T, 3, 4, H, W)                                 # [T,3,4,H,W]
+        mono = [rearrange(xg[:, g], 'T (r c) H W -> T 1 (r H) (c W)', r=2, c=2) for g in range(3)]
+        y = torch.cat(mono[::-1], dim=1)                           # [T,3,2H,2W]
+        h2, w2 = 2 * H, 2 * W
 
-    # pad to multiples of `align`
-    _, _, h2, w2 = y.shape
+    else:  # "flatten"
+        mono = rearrange(x, 'T (r c) H W -> T 1 (r H) (c W)', r=3, c=4)  # [T,1,3H,4W]
+        y = mono.repeat(1, 3, 1, 1)                                      # [T,3,3H,4W]
+        h2, w2 = 3 * H, 4 * W
+
+    # pad
     pad_h = (align - h2 % align) % align
     pad_w = (align - w2 % align) % align
     y_pad = F.pad(y, (0, pad_w, 0, pad_h), mode='replicate')
+    return y_pad, (h2, w2)
 
-    return y_pad, (h2, w2)   # keep (H2_orig, W2_orig) so we can crop on unpack
 
-
-def unpack_rgb_to_planes(y_pad, C, orig_size, mode: str = "flatten"):
+def unpack_rgb_to_planes(y_pad: torch.Tensor, C: int, orig_size: Tuple[int, int], mode: str = "flatten"):
     """
-    y_pad : [T,3,H2_pad,W2_pad]  (from pack_planes_to_rgb)
-    C     : 4 or 12
-    orig_size : (H2_orig, W2_orig)  (returned by pack)
-    -> x : [T,C,H,W]
+    Inverse of pack_planes_to_rgb (kept here unchanged; you’ll extend for flat4 in your next step).
     """
     if mode not in ("mosaic", "flatten"):
+        # NOTE: you'll add "flat4" inverse in the follow-up step
         raise ValueError(f"unpack: unknown mode '{mode}'")
 
     H2, W2 = orig_size
-    y = y_pad[..., :H2, :W2]                     # remove padding
+    y = y_pad[..., :H2, :W2]
 
     if mode == "mosaic":
-        if C == 12:
-            # invert the mosaic (split RGB, unshuffle, concat)
-            b, g, r = y.split(1, dim=1)
-            blocks = [F.pixel_unshuffle(ch, 2) for ch in (r, g, b)]
-            return torch.cat(blocks, dim=1)      # [T,12,H,W]
-        else:
+        if C != 12:
             raise ValueError(f"unpack(mosaic): C must be 12 (got {C})")
+        b, g, r = y.split(1, dim=1)
+        blocks = [F.pixel_unshuffle(ch, 2) for ch in (r, g, b)]
+        return torch.cat(blocks, dim=1)  # [T,12,H,W]
 
-    else:  # mode == "flatten"
-        if C == 12:
-            # y was mono repeated 3×; take first channel and invert 3×4 tiling
-            mono = y[:, :1]                      # [T,1,3H,4W]
-            # infer H,W from H2,W2 and the 3×4 tiling
-            if H2 % 3 != 0 or W2 % 4 != 0:
-                raise ValueError(f"unpack(flatten): orig_size {(H2,W2)} not divisible by (3,4)")
-            H = H2 // 3
-            W = W2 // 4
-            x = rearrange(mono, 'T 1 (r H) (c W) -> T (r c) H W', r=3, c=4, H=H, W=W)  # [T,12,H,W]
-            return x
-        else:
+    else:  # "flatten"
+        if C != 12:
             raise ValueError(f"unpack(flatten): C must be 12 (got {C})")
+        mono = y[:, :1]                      # [T,1,3H,4W]
+        if H2 % 3 != 0 or W2 % 4 != 0:
+            raise ValueError(f"unpack(flatten): orig_size {(H2,W2)} not divisible by (3,4)")
+        H = H2 // 3
+        W = W2 // 4
+        x = rearrange(mono, 'T 1 (r H) (c W) -> T (r c) H W', r=3, c=4, H=H, W=W)
+        return x
+
+
+# ======================== DENSITY (Dz=192) ========================
+def pack_density_to_rgb(d5: torch.Tensor, align: int = DCVC_ALIGN, mode: str = "flatten"):
+    """
+    d5: [1,1,Dy,Dx,Dz] (Dz must be 192 for 'mosaic'/'flat4')
+    -> y_pad: [1,3,H2_pad,W2_pad]; orig: (H2_orig,W2_orig)
+
+    modes:
+      - "mosaic":
+          • Map to [0,1], permute to [1,Dz,Dy,Dx]
+          • Split to 3 groups of 64, pixel_shuffle(scale=8) per group -> [1,1,8Dy,8Dx]
+          • Concat 3 groups as RGB -> [1,3,8Dy,8Dx]
+      - "flat4":
+          • Map to [0,1], permute to [1,Dz,Dy,Dx]
+          • Split to 3 groups of 64, tile each group into 8x8 mono -> [1,1,8Dy,8Dx]
+          • Concat 3 groups as RGB -> [1,3,8Dy,8Dx]
+      - "flatten" (legacy, unchanged):
+          • Map to [0,1], view as [1,C=Dy,H=Dx,W=Dz], row-wise tile to mono canvas -> repeat to RGB
+    """
+    assert d5.dim() == 5 and d5.shape[:2] == (1, 1), f"expected [1,1,Dy,Dx,Dz], got {tuple(d5.shape)}"
+    _, _, Dy, Dx, Dz = d5.shape
+
+    if mode not in ("flatten", "mosaic", "flat4"):
+        raise ValueError(f"pack_density_to_rgb: unknown mode '{mode}'")
+
+    if mode == "flatten":
+        d01 = dens_to01(d5)                       # [1,1,Dy,Dx,Dz]
+        d01_chw = d01.view(1, Dy, Dx, Dz)         # [1,C=Dy,H=Dx,W=Dz]
+        mono, (Hc, Wc) = tile_1xCHW(d01_chw)      # [Hc,Wc]
+        y = mono.unsqueeze(0).repeat(3, 1, 1).unsqueeze(0)  # [1,3,Hc,Wc]
+        h2, w2 = Hc, Wc
+
+    else:
+        # both "mosaic" and "flat4" need Dz == 192 (3 * 8 * 8)
+        if Dz != 192:
+            raise ValueError(f"{mode} expects Dz=192, got Dz={Dz}")
+
+        d01 = dens_to01(d5)                                     # [1,1,Dy,Dx,Dz]
+        x = d01.permute(0, 1, 4, 2, 3).reshape(1, Dz, Dy, Dx)   # [1,Dz,Dy,Dx]
+        xg = x.view(1, 3, 64, Dy, Dx)                           # 3 groups of 64
+
+        if mode == "mosaic":
+            # pixel shuffle (scale=8) per group: [1,64,Dy,Dx] -> [1,1,8Dy,8Dx]
+            planes = [F.pixel_shuffle(xg[:, g], 8) for g in range(3)]
+            y = torch.cat(planes[::-1], dim=1)                  # [1,3,8Dy,8Dx] (B,G,R)→RGB-ish)
+        else:  # "flat4"
+            # tile 8x8 channels -> [1,1,8Dy,8Dx]
+            mono = [rearrange(xg[:, g], 'B (r c) H W -> B 1 (r H) (c W)', r=8, c=8) for g in range(3)]
+            y = torch.cat(mono[::-1], dim=1)                    # [1,3,8Dy,8Dx]
+
+        h2, w2 = 8 * Dy, 8 * Dx
+
+    # pad to multiples of `align`
+    pad_h = (align - h2 % align) % align
+    pad_w = (align - w2 % align) % align
+    y_pad = F.pad(y, (0, pad_w, 0, pad_h), mode='replicate')
+    return y_pad, (h2, w2)
+
+
+def unpack_rgb_to_planes(y_pad: torch.Tensor, C: int, orig_size: Tuple[int, int], mode: str = "flatten"):
+    """
+    y_pad : [T,3,H2_pad,W2_pad]  (from pack_planes_to_rgb)
+    C     : must be 12
+    orig_size : (H2_orig, W2_orig)  (returned by pack)
+    -> x : [T,C,H,W] in [0,1]
+    """
+    if mode not in ("mosaic", "flatten", "flat4"):
+        raise ValueError(f"unpack: unknown mode '{mode}'")
+    if C != 12:
+        raise ValueError(f"unpack expects C==12 (got {C})")
+
+    H2, W2 = orig_size
+    y = y_pad[..., :H2, :W2]  # remove padding
+
+    if mode == "mosaic":
+        # split RGB, unshuffle (scale=2), concat in channel order (r,g,b)
+        b, g, r = y.split(1, dim=1)
+        blocks = [F.pixel_unshuffle(ch, 2) for ch in (r, g, b)]  # each -> [T,4,H,W]
+        return torch.cat(blocks, dim=1)                           # [T,12,H,W]
+
+    if mode == "flat4":
+        # inverse of: rearrange(..., 'T (r c) H W -> T 1 (r H) (c W)', r=2,c=2), RGB order was reversed at pack
+        b, g, r = y.split(1, dim=1)  # [T,1,2H,2W]
+        def inv_tile_2x2(ch):
+            return rearrange(ch, 'T 1 (r H) (c W) -> T (r c) H W', r=2, c=2)
+        groups = [inv_tile_2x2(r), inv_tile_2x2(g), inv_tile_2x2(b)]  # each [T,4,H,W]
+        return torch.cat(groups, dim=1)  # [T,12,H,W]
+
+    # mode == "flatten"
+    # y is mono repeated 3×; take first channel and invert 3×4 tiling
+    mono = y[:, :1]  # [T,1,3H,4W]
+    if H2 % 3 != 0 or W2 % 4 != 0:
+        raise ValueError(f"unpack(flatten): orig_size {(H2,W2)} not divisible by (3,4)")
+    H = H2 // 3
+    W = W2 // 4
+    x = rearrange(mono, 'T 1 (r H) (c W) -> T (r c) H W', r=3, c=4, H=H, W=W)  # [T,12,H,W]
+    return x
+
+
+# -------------------------------------------------------
+# Density: inverse of pack_density_to_rgb
+# -------------------------------------------------------
+def unpack_density_from_rgb(
+    y_pad: torch.Tensor, Dy: int, Dx: int, Dz: int, orig_size: Tuple[int, int], mode: str = "flatten"
+):
+    """
+    Inverse of pack_density_to_rgb.
+
+    Args:
+      y_pad:     [1,3,Hp,Wp] float01
+      Dy,Dx,Dz:  target density dims (Dz must be 192 for 'mosaic'/'flat4')
+      orig_size: (H2_orig, W2_orig) saved by the packer (crop size before pad)
+      mode:      'flatten' | 'mosaic' | 'flat4'
+    Returns:
+      d5: [1,1,Dy,Dx,Dz] in raw domain (still in [0,1] if you haven’t called dens_from01)
+           (call dens_from01 afterward to get [-5,30] range)
+    """
+    if mode not in ("flatten", "mosaic", "flat4"):
+        raise ValueError(f"unpack_density_from_rgb: unknown mode '{mode}'")
+
+    H2, W2 = orig_size
+    y = y_pad[..., :H2, :W2]  # [1,3,H2,W2]
+
+    if mode == "flatten":
+        # y is 3× repeated mono canvas (H2,W2) that was built by row-wise tiling
+        mono = y[:, 0].squeeze(0)                  # [H2,W2]
+        d01_chw = untile_to_1xCHW(mono, Dy, Dx, Dz)  # [1,Dy,Dx,Dz]
+        d5 = d01_chw.view(1, 1, Dy, Dx, Dz)
+        return d5
+
+    # For 'mosaic' and 'flat4', Dz must be 192 (3 groups * 64)
+    if Dz != 192:
+        raise ValueError(f"{mode} expects Dz=192, got Dz={Dz}")
+
+    b, g, r = y.split(1, dim=1)  # [1,1,H2,W2] each
+
+    if mode == "mosaic":
+        # inverse of per-group pixel_shuffle(scale=8)
+        def inv_shuffle_8(ch):
+            return F.pixel_unshuffle(ch, 8)       # [1,64,Dy,Dx]
+        g0 = inv_shuffle_8(r); g1 = inv_shuffle_8(g); g2 = inv_shuffle_8(b)  # order back to (0,1,2)
+        x = torch.cat([g0, g1, g2], dim=1)        # [1,192,Dy,Dx]
+    else:
+        # flat4: inverse of 8x8 tiling
+        def inv_tile_8x8(ch):
+            return rearrange(ch, 'B 1 (r H) (c W) -> B (r c) H W', r=8, c=8)  # [1,64,Dy,Dx]
+        g0 = inv_tile_8x8(r); g1 = inv_tile_8x8(g); g2 = inv_tile_8x8(b)
+        x = torch.cat([g0, g1, g2], dim=1)        # [1,192,Dy,Dx]
+
+    # Back to [1,1,Dy,Dx,Dz] (still in [0,1])
+    d01_5 = x.view(1, 1, Dz, Dy, Dx).permute(0, 1, 3, 4, 2).contiguous()  # [1,1,Dy,Dx,Dz]
+    return d01_5
 
 def normalize_planes(
         seq, 

@@ -10,6 +10,7 @@ from fractions import Fraction
 import cupy as cp
 import pycuda.driver as cuda
 import ctypes
+import cv2
 
 
 from src.utils.common import get_state_dict
@@ -20,6 +21,7 @@ from src.utils.transforms import rgb2ycbcr, ycbcr2rgb
 
 from src.models.model_utils import (
     pack_planes_to_rgb, unpack_rgb_to_planes,
+    pack_density_to_rgb, unpack_density_from_rgb,
     normalize_planes, DCVC_ALIGN,
     dens_to01, dens_from01,
     tile_1xCHW, untile_to_1xCHW,
@@ -27,6 +29,7 @@ from src.models.model_utils import (
     jpeg_roundtrip_color,
     sandwich_planes_to_rgb, sandwich_rgb_to_planes,
 )
+
 import TeTriRF.lib.utils as tetrirf_utils
 import PyNvVideoCodec as nvc
 
@@ -835,15 +838,12 @@ class DCVCVideoCodecWrapper(nn.Module):
         return d_rec, bpp, psnr
 
 class DCVCImageCodecWrapper(torch.nn.Module):
-    '''
-    Autograd: 
-        - Calling the codec in .eval() mode does not disable gradients; 
-        - it only toggles internal behaviors like dropout/batchnorm. 
-        - Avoid torch.no_grad() around the codec if you want gradients.
-    '''
-    def __init__(
-            self, cfg_dcvc, device, 
-            weight_path="/home/tungichen_umass_edu/DCVC/checkpoints/cvpr2025_image.pth.tar"):
+    """
+    Differentiable wrapper over DCVC image codec.
+    Uses separate packing modes for feature planes vs density grid.
+    """
+    def __init__(self, cfg_dcvc, device,
+                 weight_path="/home/tungichen_umass_edu/DCVC/checkpoints/cvpr2025_image.pth.tar"):
         super().__init__()
         self.device = device
         self.weight_path = weight_path
@@ -851,81 +851,70 @@ class DCVCImageCodecWrapper(torch.nn.Module):
         self.codec_wrapper = DCVCImageCodec(
             weight_path=self.weight_path,
             require_grad=False
-            )
+        )
 
-        self.packing_mode = cfg_dcvc.packing_mode
-        self.pack_fn   = pack_planes_to_rgb
-        self.unpack_fn = unpack_rgb_to_planes
-        self.qp = cfg_dcvc.dcvc_qp
-        self.quant_mode = cfg_dcvc.quant_mode
-        self.global_range = cfg_dcvc.global_range
-        self.align = DCVC_ALIGN
+        # === NEW: two modes ===
+        self.plane_mode = cfg_dcvc.plane_packing_mode  # "flatten" | "mosaic" | "flat4"
+        self.grid_mode  = cfg_dcvc.grid_packing_mode   # "flatten" | "mosaic" | "flat4"
+
+        self.qp          = cfg_dcvc.dcvc_qp
+        self.quant_mode  = cfg_dcvc.quant_mode
+        self.global_range= cfg_dcvc.global_range
+        self.align       = DCVC_ALIGN
         self.in_channels = cfg_dcvc.in_channels
-        self.cfg_dcvc = cfg_dcvc
-        self.use_amp = cfg_dcvc.use_amp
-        self.amp_dtype = torch.float16  # keep TriPlane in fp32, only DCVC in fp16
+        self.cfg_dcvc    = cfg_dcvc
+        self.use_amp     = cfg_dcvc.use_amp
+        self.amp_dtype   = torch.float16  # keep TriPlane in fp32, run DCVC in fp16
 
+        # ----- optional differentiable bpp estimator -----
         self.use_gradbpp_est = getattr(cfg_dcvc, "gradbpp", False)
         self.bpp_estimator = None
         if self.use_gradbpp_est:
-            self.bpp_estimator = DMCI()  
+            self.bpp_estimator = DMCI()
             self.bpp_estimator.load_state_dict(get_state_dict(self.weight_path))
             self.bpp_estimator.update(0.12)
             self.bpp_estimator = self.bpp_estimator.to(self.device)
-            # Freeze params so grads flow to input only
             for p in self.bpp_estimator.parameters():
                 p.requires_grad_(False)
             self.bpp_estimator.eval()
             self.bpp_estimator.half()
 
-    def compute_bpp(
-        self,
-        image_tensor: torch.Tensor   # (B,3,H,W) in [0,1]
-    ) -> torch.Tensor:
+    # ---------------------- differentiable BPP estimator ----------------------
+
+    def compute_bpp(self, image_tensor: torch.Tensor) -> torch.Tensor:
         """
-        Returns differentiable bpp (scalar tensor) w.r.t. image_tensor.
+        image_tensor: [B,3,H,W] in [0,1]
+        Returns differentiable scalar (bits per padded pixel).
         """
         assert self.bpp_estimator is not None, "BPP estimator not initialized"
-        T, C, H, W = image_tensor.shape
-        image_tensor_16 = image_tensor.to(torch.float16)
-        x_in = rgb2ycbcr(image_tensor_16)
-        
+        x_in = rgb2ycbcr(image_tensor.to(torch.float16))
         bpp = self.bpp_estimator.estimate_bpp(x_in, qp=self.qp)
         return bpp
-    
+
     def estimate_bpp_only(self, planes_1xCHW: torch.Tensor) -> torch.Tensor:
         """
-        planes_1xCHW: [1,C,H,W] float on any device, raw-domain (same input you pass to .forward())
-        Returns differentiable bpp scalar (bits per padded pixel).
+        planes_1xCHW: [1,C,H,W] raw-domain (same as forward()).
+        Uses the *plane* packer/mode.
         """
         assert self.use_gradbpp_est and self.bpp_estimator is not None, "BPP estimator not enabled"
-        dev = planes_1xCHW.device
         # 1) normalize to [0,1]
-        x01, _, _ = normalize_planes(planes_1xCHW, mode=self.quant_mode, global_range=self.global_range)  # [1,C,H,W] on dev
-        # 2) pack + pad to align (what codec sees)
-        canv_pad, _ = self.pack_fn(x01, align=self.align, mode=self.packing_mode)  # [1,3,Hp,Wp]
-        # 3) DMCI estimator (works on [0,1] RGB-like)
-        return self.compute_bpp(canv_pad)  # differentiable scalar tensor
+        x01, _, _ = normalize_planes(planes_1xCHW, mode=self.quant_mode, global_range=self.global_range)
+        # 2) pack (+ pad inside) with plane mode
+        canv_pad, _ = pack_planes_to_rgb(x01, align=self.align, mode=self.plane_mode)
+        # 3) differentiable bpp
+        return self.compute_bpp(canv_pad)
 
     def estimate_bpp_density_only(self, density_1x1: torch.Tensor) -> torch.Tensor:
         """
-        density_1x1: [1,1,Dy,Dx,Dz] float on any device.
-        Returns differentiable bpp scalar for density.
+        density_1x1: [1,1,Dy,Dx,Dz] raw-domain.
+        Uses the *grid* packer/mode.
         """
         assert self.use_gradbpp_est and self.bpp_estimator is not None, "BPP estimator not enabled"
-        dev = density_1x1.device
-        # map to [0,1]
-        d01 = dens_to01(density_1x1)                             # [1,1,Dy,Dx,Dz]
-        Dy, Dx, Dz = d01.shape[2:]
-        chw = d01.view(1, Dy, Dx, Dz)                            # [1,C,H,W] with C=Dy
-        mono, (Hc, Wc) = tile_1xCHW(chw)                         # [Hc,Wc]
-        canv = mono.unsqueeze(0).repeat(3, 1, 1).unsqueeze(0)    # [1,3,Hc,Wc]
-        # pad to align
-        pad_h = (self.align - Hc % self.align) % self.align
-        pad_w = (self.align - Wc % self.align) % self.align
-        canv_pad = F.pad(canv, (0, pad_w, 0, pad_h), mode="replicate")  # [1,3,Hp,Wp]
-        # entropy estimator on [0,1]
-        return self.compute_bpp(canv_pad)                        # differentiable scalar tensor
+        # pack_density_to_rgb does mapping to [0,1] and padding internally
+        canv_pad, _ = pack_density_to_rgb(density_1x1, align=self.align, mode=self.grid_mode)
+        return self.compute_bpp(canv_pad)
+
+    # --------------------------- tri-plane feature path ---------------------------
 
     def forward(self, frame: torch.Tensor):
         """
@@ -939,16 +928,15 @@ class DCVCImageCodecWrapper(torch.nn.Module):
         x = frame
         assert x.shape[1] == self.in_channels, f"expected C={self.in_channels}, got {x.shape[1]}"
 
-        # Quantize feature planes to 0-1
-        x01, c_min, scale = normalize_planes(
-            x, mode=self.quant_mode, global_range=self.global_range)
+        # Quantize feature planes to [0,1]
+        x01, c_min, scale = normalize_planes(x, mode=self.quant_mode, global_range=self.global_range)
 
-        # Pack the quantized feature planes to 3 channels (and padding)
-        y_pad, orig_size = self.pack_fn(x01, mode=self.packing_mode)
+        # Pack (+pad) with the *plane* mode
+        y_pad, orig_size = pack_planes_to_rgb(x01, align=self.align, mode=self.plane_mode)
         H2p, W2p = y_pad.shape[-2:]
         y_pad = y_pad.to(device=self.device)
 
-        # Optimize memory layout
+        # Optimize layout
         try:
             y_pad = y_pad.contiguous(memory_format=torch.channels_last)
         except Exception:
@@ -957,27 +945,23 @@ class DCVCImageCodecWrapper(torch.nn.Module):
         # Run DCVC coding
         y_half = y_pad.to(torch.float16)
         with torch.cuda.amp.autocast(enabled=self.use_amp, dtype=self.amp_dtype):
+            enc_result = self.codec_wrapper.compress(y_half, self.qp)
+            dec_result = self.codec_wrapper.decompress(enc_result)
+            x_hat_half = dec_result[..., :H2p, :W2p]  # remove any internal padding
 
-                enc_result = self.codec_wrapper.compress(y_half, self.qp)
-                bits = self.codec_wrapper.measure_size(enc_result, self.qp)
-                dec_result  = self.codec_wrapper.decompress(enc_result)
-                x_hat_half = dec_result[..., :H2p, :W2p]
+            bits = self.codec_wrapper.measure_size(enc_result, self.qp)
+            bpp = torch.tensor(float(bits) / float(H2p * W2p), device=y_pad.device, dtype=torch.float32)
 
-                # mimic training bpp for consistency (bits / padded pixels)
-                bits = self.codec_wrapper.measure_size(enc_result, self.qp)
-                bpp = torch.tensor(float(bits) / float(H2p * W2p), device=y_pad.device, dtype=torch.float32)
-
-        # Exit AMP, cast to fp32 for numerics and to match TriPlane later
         x_hat32 = x_hat_half.to(torch.float32)
 
-        # Unpack the reconstructed feature planes and crop to ori size
-        rec01 = self.unpack_fn(x_hat32, x01.shape[1], orig_size, mode=self.packing_mode)
+        # Unpack with the *same plane mode*
+        rec01 = unpack_rgb_to_planes(x_hat32, x01.shape[1], orig_size, mode=self.plane_mode)
 
         # Rescale to original range
-        recon = (rec01 * scale + c_min).to(torch.float32) 
+        recon = (rec01 * scale + c_min).to(torch.float32)
 
         if self.quant_mode == "global":
-            peak = float(self.global_range[1] - self.global_range[0])  # = 40.0
+            peak = float(self.global_range[1] - self.global_range[0])  # e.g., 40.0
             mse_raw = F.mse_loss(recon, x.to(recon.dtype))
             plane_psnr = tetrirf_utils.mse2psnr_with_peak(mse_raw, peak=peak)
         else:
@@ -985,175 +969,50 @@ class DCVCImageCodecWrapper(torch.nn.Module):
 
         return recon, bpp, plane_psnr
 
+    # ------------------------------ density path ---------------------------------
+
     def forward_density(self, density_1x1: torch.Tensor):
         """
         Args:
-            density_1x1: [1,1,Dy,Dx,Dz] float32 on any device
+            density_1x1: [1,1,Dy,Dx,Dz] float32 on any device.
         Returns:
             d_rec [1,1,Dy,Dx,Dz] float32 on input device
             bpp   scalar tensor (bits per padded pixel)
             psnr  scalar tensor (peak=35 for [-5,30] mapping)
         """
         assert density_1x1.dim() == 5 and density_1x1.shape[0] == 1 and density_1x1.shape[1] == 1
-        _, _, Dy, Dx, Dz = density_1x1.shape
 
-        # Map to [0,1], pack as mono canvas, then 3ch by repetition
-        d01 = dens_to01(density_1x1)                # [1,1,Dy,Dx,Dz]
-        d01_chw = d01.view(1, Dy, Dx, Dz)                 # [1,C,H,W] with C=Dy,H=Dx,W=Dz
-        mono, (Hc, Wc) = tile_1xCHW(d01_chw)        # [Hc,Wc]
-        y = mono.unsqueeze(0).repeat(3, 1, 1).unsqueeze(0)# [1,3,Hc,Wc]
-
-        # Align to DCVC stride
-        pad_h = (self.align - Hc % self.align) % self.align
-        pad_w = (self.align - Wc % self.align) % self.align
-        y_pad = F.pad(y, (0, pad_w, 0, pad_h), mode="replicate").to(self.device)
+        # Pack (+pad) with the *grid* mode (handles dens_to01 + reshape internally)
+        y_pad, orig_hw = pack_density_to_rgb(density_1x1, align=self.align, mode=self.grid_mode)  # [1,3,Hp,Wp], (H2,W2)
+        Hp, Wp = y_pad.shape[-2:]
+        y_pad = y_pad.to(self.device)
 
         # AMP + codec forward
         y_half = y_pad.to(torch.float16).contiguous(memory_format=torch.channels_last)
         with torch.cuda.amp.autocast(enabled=self.use_amp, dtype=self.amp_dtype):
             enc_result = self.codec_wrapper.compress(y_half, self.qp)
             dec_result = self.codec_wrapper.decompress(enc_result)
-            x_hat_half = dec_result[..., :Hc, :Wc]
+            x_hat_half = dec_result[..., :Hp, :Wp]  # keep padded shape (Hp,Wp)
 
-            # mimic training bpp for consistency (bits / padded pixels)
-            Hp, Wp = y_pad.shape[-2:]
             bits = self.codec_wrapper.measure_size(enc_result, self.qp)
             bpp = torch.tensor(float(bits) / float(Hp * Wp), device=y_pad.device, dtype=torch.float32)
 
         x_hat = x_hat_half.to(torch.float32)
 
-        # Take one channel back to mono canvas (any of the three; they should match)
-        mono_rec = x_hat[:, 0].squeeze(0)                 # [Hc,Wc] fp32
-
-        # Untile → [1,C,H,W] → [1,1,Dy,Dx,Dz]
-        d01_rec_chw = untile_to_1xCHW(mono_rec, Dy, Dx, Dz)   # [1,Dy,Dx,Dz]
-        d_rec = dens_from01(d01_rec_chw).view(1, 1, Dy, Dx, Dz)
-
-        # PSNR in raw density domain (peak = 35)
-        mse = F.mse_loss(d_rec, density_1x1)
-        psnr = 10.0 * torch.log10((35.0 ** 2) / (mse + 1e-12))
-
-        # ---- NEW: switch bpp source ----
-        if self.use_gradbpp_est and self.bpp_estimator is not None:
-            # Use packed/padded canvas (what the codec sees) for an apples-to-apples bpp
-            # y_pad is (B=1, 3, Hp, Wp) in [0,1].
-            bpp_est = self.compute_bpp(image_tensor=y_pad)
-            bpp = bpp_est.to(y_pad.device, dtype=torch.float32)
-
-        return d_rec, bpp, psnr        
-
-class JPEGImageCodecWrapper(torch.nn.Module):
-    """
-    CPU JPEG wrapper with the same public interface as DCVCImageCodec:
-
-        forward(frame: [1,C,H,W]) -> (recon, bpp, psnr)
-        forward_density(dens: [1,1,Dy,Dx,Dz]) -> (recon, bpp, psnr)
-
-    Non-differentiable by nature; use with STE in the caller.
-    """
-    def __init__(self, cfg_jpeg, device="cuda"):
-        super().__init__()
-        self.device       = torch.device(device)
-        self.packing_mode = cfg_jpeg.packing_mode     # "flatten" or "mosaic"
-        self.quant_mode   = cfg_jpeg.quant_mode       # "global" or "per_channel" (PSNR implemented for global)
-        self.global_range = cfg_jpeg.global_range     # e.g. (-20.0, 20.0)
-        self.in_channels  = cfg_jpeg.in_channels      # e.g. 12
-        self.align        = int(getattr(cfg_jpeg, "align", 1))     # JPEG doesn't need alignment; keep for symmetry
-        self.quality      = int(cfg_jpeg.quality)     # 1..100
-
-    # --------------------------- tri-plane feature path ---------------------------
-
-    @torch.no_grad()
-    def forward(self, frame: torch.Tensor):
-        """
-        Args:
-            frame: [1, C, H, W] float on any device.
-        Returns:
-            recon [1,C,H,W] float32 on input device
-            bpp   scalar tensor (bits per padded pixel)
-            psnr  scalar tensor (raw-domain, global peak)
-        """
-        assert frame.dim() == 4 and frame.shape[0] == 1, "Expected [1,C,H,W]"
-        assert frame.shape[1] == self.in_channels, f"expected C={self.in_channels}, got {frame.shape[1]}"
-        dev = frame.device
-
-        # 1) Normalize to [0,1]
-        x = frame.to(torch.float32)
-        x01, c_min, scale = normalize_planes(x, mode=self.quant_mode, global_range=self.global_range)
-
-        # 2) Pack to BGR image [1,3,H2p,W2p] with internal padding to 'align'
-        y_pad, orig_hw = pack_planes_to_rgb(x01, align=self.align, mode=self.packing_mode)
-        Hp, Wp = y_pad.shape[-2], y_pad.shape[-1]
+        # Crop back to pre-pad size and invert grid packer
         H2, W2 = orig_hw
-
-        # 3) JPEG round-trip on CPU
-        #    (OpenCV uses BGR; our tensor is [1,3,H,W] with arbitrary channel semantics)
-        y_cpu = y_pad[0].permute(1, 2, 0).contiguous().cpu().numpy()   # HxWx3 float01
-        dec_f01_bgr, bits = jpeg_roundtrip_color(y_cpu, quality=self.quality)
-        dec_t = torch.from_numpy(dec_f01_bgr).permute(2, 0, 1)[None]   # [1,3,H,W] float01
-
-        # 4) Crop to original, unpack back to planes, and de-normalize
-        dec_t = crop_from_align(dec_t, orig_hw)                       # [1,3,H2,W2]
-        dec_t = dec_t.to(dev, non_blocking=True)    
-        rec01 = unpack_rgb_to_planes(dec_t, x01.shape[1], orig_hw, mode=self.packing_mode)
-        recon = (rec01 * scale + c_min).to(torch.float32)
-
-        # 5) bpp over padded pixels (matches your DCVC convention)
-        bpp = torch.tensor(float(bits) / float(Hp * Wp), device=dev, dtype=torch.float32)
-
-        # 6) PSNR in raw domain (global mode peak)
-        if self.quant_mode == "global":
-            peak = float(self.global_range[1] - self.global_range[0])  # e.g., 40
-            mse_raw = F.mse_loss(recon, x.to(recon.dtype))
-            psnr = tetrirf_utils.mse2psnr_with_peak(mse_raw, peak=peak)
-        else:
-            raise NotImplementedError("only implemented for global mode")
-
-        return recon, bpp, psnr
-
-    # ------------------------------ density path ---------------------------------
-
-    @torch.no_grad()
-    def forward_density(self, density_1x1: torch.Tensor):
-        """
-        Args:
-            density_1x1: [1,1,Dy,Dx,Dz] float32 on any device
-        Returns:
-            d_rec [1,1,Dy,Dx,Dz] float32 on input device
-            bpp   scalar tensor (bits per padded pixel)
-            psnr  scalar tensor (peak=35 for [-5,30] mapping)
-        """
-        assert density_1x1.dim() == 5 and density_1x1.shape[0] == 1 and density_1x1.shape[1] == 1
-        dev = density_1x1.device
-        _, _, Dy, Dx, Dz = density_1x1.shape
-
-        # (i) map to [0,1]
-        d01 = dens_to01(density_1x1)                      # [1,1,Dy,Dx,Dz]
-
-        # (ii) view as [1,C,H,W] with C=Dy, H=Dx, W=Dz and tile to mono
-        d01_chw = d01.view(1, Dy, Dx, Dz)                  # [1,C,H,W]
-        mono, (Hc, Wc) = tile_1xCHW(d01_chw)              # [Hc,Wc] float01
-
-        # (iii) repeat mono → 3ch image and pad to align
-        y = mono.unsqueeze(0).repeat(3, 1, 1).unsqueeze(0) # [1,3,Hc,Wc]
-        y_pad, _ = pad_to_align(y, align=self.align)      # [1,3,Hp,Wp]
-        Hp, Wp = y_pad.shape[-2], y_pad.shape[-1]
-
-        # (iv) JPEG CPU round-trip
-        y_cpu = y_pad[0].permute(1, 2, 0).contiguous().cpu().numpy()  # Hp×Wp×3 float01
-        dec_f01_bgr, bits = jpeg_roundtrip_color(y_cpu, quality=self.quality)
-        dec_t = torch.from_numpy(dec_f01_bgr).permute(2, 0, 1)[None]  # [1,3,Hp,Wp]
-        dec_t = dec_t[..., :Hc, :Wc].to(dev, non_blocking=True)        # [1,3,Hc,Wc] on dev
-        mono_rec = dec_t[0, 0]                                         # <<< [Hc, Wc] 2-D canvas
-        d01_rec_chw = untile_to_1xCHW(mono_rec, Dy, Dx, Dz)           # [1,Dy,Dx,Dz]
-        d_rec = dens_from01(d01_rec_chw).view(1, 1, Dy, Dx, Dz)       # [1,1,Dy,Dx,Dz] on dev
-
-        # bpp over padded pixels
-        bpp = torch.tensor(float(bits) / float(Hp * Wp), device=dev, dtype=torch.float32)
+        x_hat_cropped = x_hat[..., :H2, :W2]
+        # unpack_density_from_rgb returns density in [0,1] as [1,1,Dy,Dx,Dz]
+        d01 = unpack_density_from_rgb(x_hat_cropped, *density_1x1.shape[-3:], orig_size=orig_hw, mode=self.grid_mode)
+        d_rec = dens_from01(d01)  # map to raw [-5,30]
 
         # PSNR in raw density domain (peak = 35)
         mse = F.mse_loss(d_rec, density_1x1.to(d_rec.dtype))
         psnr = 10.0 * torch.log10((35.0 ** 2) / (mse + 1e-12))
+
+        # If enabled, replace bpp with differentiable estimate from packed canvas
+        if self.use_gradbpp_est and self.bpp_estimator is not None:
+            bpp = self.compute_bpp(image_tensor=y_pad).to(y_pad.device, dtype=torch.float32)
 
         return d_rec, bpp, psnr
     
@@ -1564,3 +1423,144 @@ class DCVCSandwichImageCodecWrapper(torch.nn.Module):
             if n.startswith(S_PREFIX):
                 continue
             yield p
+
+def _rgb_to_bgr(img: np.ndarray) -> np.ndarray:
+    # safe channel flip with positive strides
+    return np.ascontiguousarray(img[..., ::-1])
+
+def _bgr_to_rgb(img: np.ndarray) -> np.ndarray:
+    return np.ascontiguousarray(img[..., ::-1])
+
+def _to_uint8_from_float01_bgr(img_f01_bgr: np.ndarray) -> np.ndarray:
+    return np.clip(np.round(img_f01_bgr * 255.0), 0, 255).astype(np.uint8)
+
+def _to_float01_from_uint8_bgr(img_u8_bgr: np.ndarray) -> np.ndarray:
+    return img_u8_bgr.astype(np.float32) / 255.0
+
+def _jpeg_roundtrip_bgr_float01(img_f01_bgr: np.ndarray, quality: int) -> tuple[np.ndarray, int]:
+    img8 = _to_uint8_from_float01_bgr(img_f01_bgr)
+    img8 = np.ascontiguousarray(img8)  # ensure contiguous for OpenCV
+    params = [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
+    ok, buf = cv2.imencode(".jpg", img8, params)
+    if not ok:
+        raise RuntimeError("JPEG encode failed")
+    bits = int(buf.size) * 8
+    dec = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)  # BGR8
+    if dec is None:
+        raise RuntimeError("JPEG decode failed")
+    if dec.ndim == 2:
+        dec = cv2.cvtColor(dec, cv2.COLOR_GRAY2BGR)
+    dec = np.ascontiguousarray(dec)  # be explicit
+    return _to_float01_from_uint8_bgr(dec), bits
+
+
+class JPEGImageCodecWrapper(torch.nn.Module):
+    """
+    CPU JPEG wrapper with the same public interface as DCVCImageCodecWrapper,
+    using separate modes for planes vs grid. Non-differentiable (use STE outside).
+    """
+    def __init__(self, cfg_jpeg, device="cuda"):
+        super().__init__()
+        self.device       = torch.device(device)
+
+        # === NEW: two modes ===
+        self.plane_mode   = cfg_jpeg.plane_packing_mode
+        self.grid_mode    = cfg_jpeg.grid_packing_mode
+
+        self.quant_mode   = cfg_jpeg.quant_mode
+        self.global_range = cfg_jpeg.global_range
+        self.in_channels  = cfg_jpeg.in_channels
+        self.align        = int(getattr(cfg_jpeg, "align", DCVC_ALIGN))  # keep for padding symmetry
+        self.quality      = int(cfg_jpeg.quality)
+
+    # --------------------------- tri-plane feature path ---------------------------
+
+    @torch.no_grad()
+    def forward(self, frame: torch.Tensor):
+        """
+        Args:
+            frame: [1, C, H, W] float on any device.
+        Returns:
+            recon [1,C,H,W] float32 on input device
+            bpp   scalar tensor (bits per padded pixel)
+            psnr  scalar tensor (raw-domain, global peak)
+        """
+        assert frame.dim() == 4 and frame.shape[0] == 1, "Expected [1,C,H,W]"
+        assert frame.shape[1] == self.in_channels, f"expected C={self.in_channels}, got {frame.shape[1]}"
+        dev = frame.device
+
+        # 1) Normalize to [0,1]
+        x = frame.to(torch.float32)
+        x01, c_min, scale = normalize_planes(x, mode=self.quant_mode, global_range=self.global_range)
+
+        # 2) Pack (+pad) with plane mode
+        y_pad, orig_hw = pack_planes_to_rgb(x01, align=self.align, mode=self.plane_mode)
+        Hp, Wp = y_pad.shape[-2], y_pad.shape[-1]
+
+        # 3) JPEG round-trip on CPU (BGR path like your script)
+        y_cpu_rgb = y_pad[0].permute(1, 2, 0).contiguous().cpu().numpy()   # HxWx3 float01 RGB
+        y_cpu_bgr = _rgb_to_bgr(y_cpu_rgb)                                 # RGB->BGR (contiguous)
+        dec_bgr_f01, bits = _jpeg_roundtrip_bgr_float01(y_cpu_bgr, quality=self.quality)
+        dec_rgb_f01 = _bgr_to_rgb(dec_bgr_f01)                             # BGR->RGB (contiguous)
+        dec_t = torch.from_numpy(dec_rgb_f01).permute(2, 0, 1).unsqueeze(0)  # [1,3,H,W]
+
+        # 4) Crop to original, unpack back to planes, and de-normalize
+        dec_t = crop_from_align(dec_t, tuple(orig_hw))
+        dec_t = dec_t.to(dev, non_blocking=True)
+        rec01 = unpack_rgb_to_planes(dec_t, x01.shape[1], orig_hw, mode=self.plane_mode)
+        recon = (rec01 * scale + c_min).to(torch.float32)
+
+        # 5) bpp over padded pixels (matches DCVC convention)
+        bpp = torch.tensor(float(bits) / float(Hp * Wp), device=dev, dtype=torch.float32)
+
+        # 6) PSNR in raw domain (global mode peak)
+        if self.quant_mode == "global":
+            peak = float(self.global_range[1] - self.global_range[0])  # e.g., 40
+            mse_raw = F.mse_loss(recon, x.to(recon.dtype))
+            psnr = tetrirf_utils.mse2psnr_with_peak(mse_raw, peak=peak)
+        else:
+            raise NotImplementedError("only implemented for global mode")
+
+        return recon, bpp, psnr
+
+    # ------------------------------ density path ---------------------------------
+
+    @torch.no_grad()
+    def forward_density(self, density_1x1: torch.Tensor):
+        """
+        Args:
+            density_1x1: [1,1,Dy,Dx,Dz] float32 on any device
+        Returns:
+            d_rec [1,1,Dy,Dx,Dz] float32 on input device
+            bpp   scalar tensor (bits per padded pixel)
+            psnr  scalar tensor (peak=35 for [-5,30] mapping)
+        """
+        assert density_1x1.dim() == 5 and density_1x1.shape[0] == 1 and density_1x1.shape[1] == 1
+        dev = density_1x1.device
+        Dy, Dx, Dz = density_1x1.shape[-3:]
+
+        # (i) Pack (+pad) with grid mode (includes dens_to01 internally)
+        y_pad, orig_hw = pack_density_to_rgb(density_1x1, align=self.align, mode=self.grid_mode)  # [1,3,Hp,Wp]
+        Hp, Wp = y_pad.shape[-2:]
+
+        # (ii) JPEG CPU round-trip in BGR
+        y_cpu_rgb = y_pad[0].permute(1, 2, 0).contiguous().cpu().numpy()
+        y_cpu_bgr = _rgb_to_bgr(y_cpu_rgb)
+        dec_bgr_f01, bits = _jpeg_roundtrip_bgr_float01(y_cpu_bgr, quality=self.quality)
+        dec_rgb_f01 = _bgr_to_rgb(dec_bgr_f01)
+        dec_t = torch.from_numpy(dec_rgb_f01).permute(2, 0, 1)[None]
+
+        # (iii) Crop back to pre-pad size and invert density pack
+        dec_t = crop_from_align(dec_t, tuple(orig_hw))
+        dec_t = dec_t.to(dev, non_blocking=True)
+        d01 = unpack_density_from_rgb(dec_t, Dy, Dx, Dz, orig_size=orig_hw, mode=self.grid_mode)  # [1,1,Dy,Dx,Dz] in [0,1]
+        d_rec = dens_from01(d01)
+
+        # (iv) bpp over padded pixels
+        bpp = torch.tensor(float(bits) / float(Hp * Wp), device=dev, dtype=torch.float32)
+
+        # (v) PSNR in raw density domain (peak = 35)
+        mse = F.mse_loss(d_rec, density_1x1.to(d_rec.dtype))
+        psnr = 10.0 * torch.log10((35.0 ** 2) / (mse + 1e-12))
+
+        return d_rec, bpp, psnr

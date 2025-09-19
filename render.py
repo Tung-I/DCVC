@@ -25,8 +25,19 @@ Usage:
     python render.py --config  configs/dynerf_sear_steak/image_l.py --frame_ids 0 --render_test
         --frame_ids 0 1 2 3 4 5 6 7 8 9 --render_test \
         --ckpt_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_crf28_g10_yuv444p
-    
-"""
+    python render.py --config  configs/dynerf_flame_steak/image.py \
+        --render_test --frame_ids 0 \
+        --ckpt_dir logs/dynerf_flame_steak/flame_steak_image/planeimg_00_00_flatten_global_jpeg_qp20
+    python render.py --config  configs/blender_lego/image.py  \
+        --render_test --frame_ids 0 \
+        --ckpt_dir logs/nerf_synthetic/lego_image
+    python render.py --config  configs/blender_lego/image.py  \
+        --render_test --frame_ids 0 \
+        --ckpt_dir logs/nerf_synthetic/lego_image/planeimg_00_00_flatten_flatten_global_jpeg_qp20
+    python render.py --config  configs/blender_lego/image.py  \
+        --render_test --frame_ids 0 \
+        --ckpt_dir logs/nerf_synthetic/dcvc_qp24_flatten_flatten/dcvc_qp24
+        """
 
 def config_parser():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)

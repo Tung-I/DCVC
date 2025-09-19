@@ -13,33 +13,46 @@ import matplotlib.pyplot as plt
 # Your DCVC sets (explicit mapping)
 # ==============================
 set1: Dict[str, str] = {
-    'qp48': 'logs/out_triplane/flame_steak_image/dcvc_qp48',
-    'qp36': 'logs/out_triplane/flame_steak_image/dcvc_qp36',
-    'qp24': 'logs/out_triplane/flame_steak_image/dcvc_qp24',
-    'qp12': 'logs/out_triplane/flame_steak_image/dcvc_qp12',
-    'qp0' : 'logs/out_triplane/flame_steak_image/dcvc_qp0'
+    'qp60': 'logs/nerf_synthetic/lego_image/planeimg_00_00_flatten_flatten_global_jpeg_qp60',
+    'qp40': 'logs/nerf_synthetic/lego_image/planeimg_00_00_flatten_flatten_global_jpeg_qp40',
+    'qp20': 'logs/nerf_synthetic/lego_image/planeimg_00_00_flatten_flatten_global_jpeg_qp20',
 }
 set2: Dict[str, str] = {
-    'qp48': 'logs/out_triplane/flame_steak_image_dcvc_qp48_dens/dcvc_qp48',
-    'qp36': 'logs/out_triplane/flame_steak_image_dcvc_qp36_dens/dcvc_qp36',
-    'qp24': 'logs/out_triplane/flame_steak_image_dcvc_qp24_dens/dcvc_qp24',
-    'qp12': 'logs/out_triplane/flame_steak_image_dcvc_qp12_dens/dcvc_qp12',
-    'qp0' : 'logs/out_triplane/flame_steak_image_dcvc_qp0_dens/dcvc_qp0'
+    'qp60': 'logs/nerf_synthetic/lego_image/planeimg_00_00_flat4_flatten_global_jpeg_qp60',
+    'qp40': 'logs/nerf_synthetic/lego_image/planeimg_00_00_flat4_flatten_global_jpeg_qp40',
+    'qp20': 'logs/nerf_synthetic/lego_image/planeimg_00_00_flat4_flatten_global_jpeg_qp20',
 }
 set3: Dict[str, str] = {
-    'qp80': 'logs/out_triplane/flame_steak_image/planeimg_00_00_flatten_global_qp80',
-    'qp60': 'logs/out_triplane/flame_steak_image/planeimg_00_00_flatten_global_qp60',
-    'qp40': 'logs/out_triplane/flame_steak_image/planeimg_00_00_flatten_global_qp40',
-    'qp20': 'logs/out_triplane/flame_steak_image/planeimg_00_00_flatten_global_qp20',
-    'qp10': 'logs/out_triplane/flame_steak_image/planeimg_00_00_flatten_global_qp10'
+    'qp60': 'logs/nerf_synthetic/jpeg_qp60_flatten_flatten/planeimg_00_00_flatten_flatten_global_jpeg_qp60',
+    'qp40': 'logs/nerf_synthetic/jpeg_qp40_flatten_flatten/planeimg_00_00_flatten_flatten_global_jpeg_qp40',
+    'qp20': 'logs/nerf_synthetic/jpeg_qp20_flatten_flatten/planeimg_00_00_flatten_flatten_global_jpeg_qp20',
 }
 set4: Dict[str, str] = {
-    'qp80': 'logs/out_triplane/flame_steak_image_jpeg_qp80/planeimg_00_00_flatten_global_qp80',
-    'qp60': 'logs/out_triplane/flame_steak_image_jpeg_qp60/planeimg_00_00_flatten_global_qp60',
-    'qp40': 'logs/out_triplane/flame_steak_image_jpeg_qp40/planeimg_00_00_flatten_global_qp40',
-    'qp20': 'logs/out_triplane/flame_steak_image_jpeg_qp20/planeimg_00_00_flatten_global_qp20',
-    'qp10': 'logs/out_triplane/flame_steak_image_jpeg_qp10/planeimg_00_00_flatten_global_qp10'
+    'qp60': 'logs/nerf_synthetic/jpeg_qp60_flat4_flatten/planeimg_00_00_flat4_flatten_global_jpeg_qp60',
+    'qp40': 'logs/nerf_synthetic/jpeg_qp40_flat4_flatten/planeimg_00_00_flat4_flatten_global_jpeg_qp40',
+    'qp20': 'logs/nerf_synthetic/jpeg_qp20_flat4_flatten/planeimg_00_00_flat4_flatten_global_jpeg_qp20',
 }
+set5: Dict[str, str] = {
+    'qp48': 'logs/nerf_synthetic/dcvc_qp48_flatten_flatten/dcvc_qp48',
+    'qp36': 'logs/nerf_synthetic/dcvc_qp36_flatten_flatten/dcvc_qp36',
+    'qp24': 'logs/nerf_synthetic/dcvc_qp24_flatten_flatten/dcvc_qp24',
+}
+set6: Dict[str, str] = {
+    'qp48': 'logs/nerf_synthetic/dcvc_qp48_flat4_flatten/dcvc_qp48',
+    'qp36': 'logs/nerf_synthetic/dcvc_qp36_flat4_flatten/dcvc_qp36',
+    'qp24': 'logs/nerf_synthetic/dcvc_qp24_flat4_flatten/dcvc_qp24',
+}
+set7: Dict[str, str] = {
+    'qp48': 'logs/nerf_synthetic/dcvc_qp48_flatten_flatten_tv/dcvc_qp48',
+    'qp36': 'logs/nerf_synthetic/dcvc_qp36_flatten_flatten_tv/dcvc_qp36',
+    'qp24': 'logs/nerf_synthetic/dcvc_qp24_flatten_flatten_tv/dcvc_qp24',
+}
+set8: Dict[str, str] = {
+    'qp48': 'logs/nerf_synthetic/dcvc_qp48_flat4_flatten_tv/dcvc_qp48',
+    'qp36': 'logs/nerf_synthetic/dcvc_qp36_flat4_flatten_tv/dcvc_qp36',
+    'qp24': 'logs/nerf_synthetic/dcvc_qp24_flat4_flatten_tv/dcvc_qp24',
+}
+
 
 # ==============================
 # Generic readers
@@ -107,19 +120,26 @@ def _parse_qp(text: str, rx: Optional[str]) -> Optional[int]:
 #
 # For JPEG baseline, we'll pass --root_jpeg at CLI and use it here.
 CURVES: List[Dict[str, Any]] = [
-    # {
-    #     "name": "JPEG Compression",
-    #     "enabled": True,
-    #     "kind": "folder_scan",
-    #     # root is provided by CLI: --root_jpeg
-    #     "root_from_cli": "root_jpeg",
-    #     "folder_regex": r"^planeimg_\d{2}_\d{2}_[a-z]+_[a-z_]+_qp(\d+)$",
-    #     "qp_regex": r".*?qp(\d+)",
-    #     "bits": {"type": "encoded_bits_txt", "path": "encoded_bits.txt"},
-    #     "psnr": {"type": "file", "path": "render_test/0_psnr.txt"},
-    # },
     {
-        "name": "JPEG",
+        "name": "TeTriRF (JPEG + Flatten)",
+        "enabled": True,
+        "kind": "mapping",
+        "paths": set1,  
+        "qp_regex": r".*?qp(\d+)",
+        "bits": {"type": "encoded_bits_txt", "path": "encoded_bits.txt"},
+        "psnr": {"type": "file", "path": "render_test/0_psnr.txt"},
+    },
+    {
+        "name": "TeTriRF (JPEG + Flat4)",
+        "enabled": True,
+        "kind": "mapping",
+        "paths": set2, 
+        "qp_regex": r".*?qp(\d+)",
+        "bits": {"type": "encoded_bits_txt", "path": "encoded_bits.txt"},
+        "psnr": {"type": "file", "path": "render_test/0_psnr.txt"},
+    },
+    {
+        "name": "Ours (JPEG + Flatten)",
         "enabled": True,
         "kind": "mapping",
         "paths": set3,  
@@ -128,7 +148,7 @@ CURVES: List[Dict[str, Any]] = [
         "psnr": {"type": "file", "path": "render_test/0_psnr.txt"},
     },
     {
-        "name": "JPEG + Our STE Training",
+        "name": "Ours (JPEG + Flat4)",
         "enabled": True,
         "kind": "mapping",
         "paths": set4, 
@@ -137,19 +157,37 @@ CURVES: List[Dict[str, Any]] = [
         "psnr": {"type": "file", "path": "render_test/0_psnr.txt"},
     },
     {
-        "name": "DCVC",
+        "name": "Ours (DCVC + Flatten)",
         "enabled": True,
         "kind": "mapping",
-        "paths": set1,
+        "paths": set5,
         "qp_regex": r".*?qp(\d+)",
         "bits": {"type": "dcvc_json", "pattern": "compress_stats_f*_q*.json"},
         "psnr": {"type": "file", "path": "render_test/0_psnr.txt"},
     },
     {
-        "name": "DCVC + Our STE Training",
+        "name": "Ours (DCVC + Flat4)",
         "enabled": True,
         "kind": "mapping",
-        "paths": set2,  # label -> folder
+        "paths": set6,  # label -> folder
+        "qp_regex": r".*?qp(\d+)",  # parse QP from label like "qp36"
+        "bits": {"type": "dcvc_json", "pattern": "compress_stats_f*_q*.json"},
+        "psnr": {"type": "file", "path": "render_test/0_psnr.txt"},
+    },
+        {
+        "name": "Ours (DCVC + Flatten + tv_loss)",
+        "enabled": True,
+        "kind": "mapping",
+        "paths": set7,
+        "qp_regex": r".*?qp(\d+)",
+        "bits": {"type": "dcvc_json", "pattern": "compress_stats_f*_q*.json"},
+        "psnr": {"type": "file", "path": "render_test/0_psnr.txt"},
+    },
+    {
+        "name": "Ours (DCVC + Flat4 + tv_loss)",
+        "enabled": True,
+        "kind": "mapping",
+        "paths": set8,  # label -> folder
         "qp_regex": r".*?qp(\d+)",  # parse QP from label like "qp36"
         "bits": {"type": "dcvc_json", "pattern": "compress_stats_f*_q*.json"},
         "psnr": {"type": "file", "path": "render_test/0_psnr.txt"},
@@ -173,7 +211,7 @@ def _read_psnr(psnr_spec: Dict[str, Any], folder: str) -> Optional[float]:
         return _read_psnr_file(folder, psnr_spec.get("path", "render_test/0_psnr.txt"))
     raise ValueError(f"Unknown psnr.type: {ptype}")
 
-def collect_folder_scan(curve: Dict[str, Any], root_dir: str) -> List[Tuple[float, float, Optional[int], str]]:
+def collect_folder_scan(curve: Dict[str, Any], root_dir: str, unit='Mbit') -> List[Tuple[float, float, Optional[int], str]]:
     folder_rx = re.compile(curve["folder_regex"])
     qp_rx = curve.get("qp_regex")  # optional
     points = []
@@ -195,13 +233,17 @@ def collect_folder_scan(curve: Dict[str, Any], root_dir: str) -> List[Tuple[floa
             continue
 
         bitrate_mbit = bits / 1e6
-        points.append((bitrate_mbit, psnr, qp, name))
+        bitrate_mb = bitrate_mbit / 8.0  # convert to MB
+        if unit == 'MB':
+            points.append((bitrate_mb, psnr, qp, name))
+        else:
+            points.append((bitrate_mbit, psnr, qp, name))
 
     # Order by QP, then bitrate
     points.sort(key=lambda p: (p[2] if p[2] is not None else 10**9, p[0]))
     return points
 
-def collect_mapping(curve: Dict[str, Any]) -> List[Tuple[float, float, Optional[int], str]]:
+def collect_mapping(curve: Dict[str, Any], unit='Mbit') -> List[Tuple[float, float, Optional[int], str]]:
     paths: Dict[str, str] = curve["paths"]
     qp_rx = curve.get("qp_regex")
     points = []
@@ -213,7 +255,11 @@ def collect_mapping(curve: Dict[str, Any]) -> List[Tuple[float, float, Optional[
             continue
         qp = _parse_qp(label, qp_rx)
         bitrate_mbit = bits / 1e6
-        points.append((bitrate_mbit, psnr, qp, label))
+        bitrate_mb = bitrate_mbit / 8.0  # convert to MB
+        if unit == 'MB':
+            points.append((bitrate_mb, psnr, qp, label))
+        else:
+            points.append((bitrate_mbit, psnr, qp, label))
 
     points.sort(key=lambda p: (p[2] if p[2] is not None else 10**9, p[0]))
     return points
@@ -226,6 +272,7 @@ def parse_args():
     ap.add_argument("--root_jpeg", help="Root with JPEG-style baseline folders (planeimg_*_qpXX). Used by the 'JPEG Compression' curve spec.")
     ap.add_argument("--annotate", action="store_true", help="Annotate points with QP/labels")
     ap.add_argument("--root_dir", default="plots")
+    ap.add_argument("--use_mb", action="store_true", help="Use MB (MegaBytes) instead of Mbit on X axis")
     return ap.parse_args()
 
 def _resolve_path(base_root: str, p: str) -> str:
@@ -233,6 +280,7 @@ def _resolve_path(base_root: str, p: str) -> str:
 
 def main():
     args = parse_args()
+    unit = 'MB' if args.use_mb else 'Mbit'
     # Collect points per curve
     curve_points: List[Tuple[str, List[Tuple[float, float, Optional[int], str]]]] = []
 
@@ -248,9 +296,9 @@ def main():
             if not root_dir:
                 print(f"[warn] skip curve '{name}': missing CLI root '{root_key}'")
                 continue
-            pts = collect_folder_scan(spec, root_dir)
+            pts = collect_folder_scan(spec, root_dir, unit=unit)
         elif kind == "mapping":
-            pts = collect_mapping(spec)
+            pts = collect_mapping(spec, unit=unit)
         else:
             print(f"[warn] unknown curve kind '{kind}' for '{name}', skipping")
             continue
@@ -277,10 +325,13 @@ def main():
         y = np.array([p[1] for p in pts], dtype=float)
         marker = markers[idx % len(markers)]
         plt.plot(x, y, marker=marker, linestyle="-", label=curve_name)
-
-    plt.xlabel("Bitrate (Mbit)", fontsize=14)
+    if unit == 'MB':
+        plt.xlabel("Bitrate (MB)", fontsize=14)
+    else:
+        plt.xlabel("Bitrate (Mbit)", fontsize=14)
     plt.ylabel("PSNR (dB)", fontsize=14)
-    plt.title("I-frame (one TriPlane)")
+    # plt.title("I-frame (one TriPlane)")
+    plt.title("The Lego Scene", fontsize=14)
     plt.grid(True, linestyle="--", linewidth=0.6, alpha=0.65)
     plt.legend()
 
