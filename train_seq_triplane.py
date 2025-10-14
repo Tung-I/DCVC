@@ -20,10 +20,8 @@ from src.data_loader.sampler import MultiBucketCycleSampler
 
 """
 Usage:
-    python train_triplane.py --config configs/dynerf_flame_steak/video_z14.py --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 --training_mode 1
-    python train_triplane.py --config TeTriRF/configs/N3D/flame_steak_image.py --frame_ids 0  --training_mode 1
-    python train_triplane.py --config TeTriRF/configs/N3D/flame_steak.py --frame_ids 0 1 2 3 4 5 6 7 8 9  --training_mode 1
-    """
+    python train_seq_triplane.py --config configs/nhr/sport1.py --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 --training_mode 1
+"""
 
 WANDB = True
 
@@ -37,7 +35,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--seed", type=int, default=777)
     p.add_argument("--training_mode", type=int, default=0)
     # misc I/O
-    p.add_argument("--i_print", type=int, default=500)
+    p.add_argument("--i_print", type=int, default=100)
     p.add_argument("--render_only", action='store_true')
     p.add_argument("--no_reload", action='store_true')
     p.add_argument("--no_reload_optimizer", action='store_true')
@@ -139,6 +137,14 @@ class Trainer:
         uniq_ids = torch.unique(frame_ids_all, sorted=True).cpu().tolist()
         device   = self.device
 
+        # >>> ADD THIS: default stepsize if missing <<<
+        step_size = float(cfg.fine_model_and_render.get('stepsize', 1.0))
+        render_kwargs = {
+            'near': float(data['near']),
+            'far':  float(data['far']),
+            'stepsize': step_size,
+        }
+
         rgb_l, ro_l, rd_l, vd_l, imsz_l, fid_l = [], [], [], [], [], []
 
         for fid in uniq_ids:
@@ -161,7 +167,7 @@ class Trainer:
                 flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y,
                 frame_ids=frame_ids_all[t_train],
                 model=model.dvgos[str(fid)],
-                masks=pmasks, render_kwargs={},
+                masks=pmasks, render_kwargs=render_kwargs,
                 flatten=(cfg.fine_train.ray_sampler == 'flatten')
             )
             rgb_l+=rgb; ro_l+=ro; rd_l+=rd; vd_l+=vd; imsz_l+=imsz; fid_l+=fids

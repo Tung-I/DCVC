@@ -83,6 +83,13 @@ def load_blender_data(
 
     focal = float(focal_orig * scale)
 
+    convert = np.array(
+        [[-1, 0, 0, 0],
+         [ 0, 0, 1, 0],
+         [ 0, 1, 0, 0],
+         [ 0, 0, 0, 1]], dtype=np.float32
+    )
+
     # --- load frames (images, c2w) ---
     images = []
     c2ws   = []
@@ -109,9 +116,10 @@ def load_blender_data(
 
         images.append(img)  # now guaranteed 3 channels
 
-        # camera-to-world (OpenGL convention) — **use as-is**
-        c2w_44 = np.array(fr["transform_matrix"], dtype=np.float32)  # [4,4]
-        c2ws.append(c2w_44[:3, :4])  # we’ll store 3×4; intrinsics appended separately
+        # --- pose conversion: APPLY convert to each dataset c2w ---
+        c2w_44 = np.array(fr["transform_matrix"], dtype=np.float32)
+        c2w_44 = convert @ c2w_44
+        c2ws.append(c2w_44[:3, :4])
 
     images = np.stack(images, axis=0)                 # [N,H,W,3 or 4], float32
     N = images.shape[0]

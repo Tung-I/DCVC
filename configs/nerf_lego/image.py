@@ -1,5 +1,5 @@
 _base_ = '../default.py'
-expname = 'lego_image'
+expname = 'lego_image_factor8vpe2'
 ckptname = None
 wandbprojectname = 'lego_image'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/nerf_synthetic'
@@ -18,22 +18,24 @@ data = dict(
 	factor = 1,
 )
 fine_model_and_render = dict(
-	num_voxels=210**3,
-	num_voxels_base=210**3,
+	num_voxels=192**3,
+	num_voxels_base=192**3,
 	k0_type='PlaneGrid',
 	rgbnet_dim=36,
     rgbnet_width=128,
     mpi_depth=192,
 	stepsize=1,
 	fast_color_thres = 1.0/256.0/80,
+    # viewbase_pe = 2,
     viewbase_pe = 2,
     dynamic_rgbnet = True,
+    factor = 8,
 )
 
 _k = 1
 fine_train = dict(
     ray_sampler='flatten',
-	N_iters=64000,
+	N_iters=32000,
 	N_rand=5000,   
 	tv_every=1,                   # count total variation loss every tv_every step
     tv_after=100,                   # count total variation loss from tv_from step

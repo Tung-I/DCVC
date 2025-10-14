@@ -16,45 +16,25 @@ from multiprocessing import Pool, Manager, Process
 
 
 def imread_using_pillow(image_path, flags=cv2.IMREAD_UNCHANGED):
-    """
-    读取图像使用Pillow库并模仿cv2.imread的行为。
-
-    参数:
-    - image_path (str): 图像的路径。
-    - flags (int): 读取模式。默认为cv2.IMREAD_UNCHANGED。
-
-    返回:
-    - numpy.ndarray: 图像的数组表示。
-    """
-    # 使用Pillow读取图像
     image = Image.open(image_path)
 
     if flags == cv2.IMREAD_UNCHANGED:
-        # 如果图像有alpha通道，则保留alpha通道
         if image.mode == 'RGBA':
             image_array = np.array(image)
-            # 把RGB通道转为BGR
             image_array = image_array[:, :, [2, 1, 0, 3]]
             return image_array
-        # 如果图像是RGB，转换为BGR
         elif image.mode == 'RGB':
             return np.array(image)[:, :, ::-1]
-        # 如果是灰度或其他模式，直接返回
         else:
             return np.array(image)
     
-    # 对于cv2.IMREAD_GRAYSCALE
     if flags == cv2.IMREAD_GRAYSCALE:
         return np.array(image.convert('L'))
 
-    # 如果是其他flags或未被特别指定的情况，返回转换为BGR的图像
     if image.mode == 'RGB':
         return np.array(image)[:, :, ::-1]
     else:
         return np.array(image)
-
-# 例子
-# image_data = imread_using_pillo
 
 class Image_Transforms(object):
     def __init__(self, size, interpolation=Image.BICUBIC, is_center = False,  isNHR = True):
@@ -69,15 +49,11 @@ class Image_Transforms(object):
         K = Ks
         Tc = Ts
 
-        
-
         img = Image.fromarray(img.astype('uint8'), 'RGB')
         mask = Image.fromarray(mask.astype('uint8'), 'RGB')
         
-
         img_np = np.asarray(img)
         
-
         width, height = img.size
 
         translation = [0,0]
@@ -120,9 +96,6 @@ class Image_Transforms(object):
         ROI = T.functional.to_tensor(ROI)
         ROI = ROI[0:1,:,:]
         
-        
-        
-        
         if mask is not None:
             mask = T.functional.affine(mask, angle = 0, translate = translation, scale= 1,shear=0)
             mask = T.functional.crop(mask, 0, 0,  int(height/ration),int(height*self.size[1]/ration/self.size[0]) )
@@ -138,7 +111,6 @@ class Image_Transforms(object):
             residual = T.functional.to_tensor(residual)
             residual = residual.permute(1,2,0)
             residual = residual[:,:,0:1]
-
 
         K[0,2] = K[0,2] + translation[0]
         K[1,2] = K[1,2] + translation[1]
@@ -334,8 +306,10 @@ class NHR_Dataset(torch.utils.data.Dataset):
         
 
 
-        res_images = torch.cat(res_images,dim=0).numpy()
-        res_images_ori = torch.cat(res_images_ori,dim=0).numpy()
+        # res_images = torch.cat(res_images,dim=0).numpy()
+        # res_images_ori = torch.cat(res_images_ori,dim=0).numpy()
+        res_images = torch.cat(res_images,dim=0)
+        res_images_ori = torch.cat(res_images_ori,dim=0)
         res_poses = np.concatenate(res_poses,axis=0)
         res_intrinsic = np.concatenate(res_intrinsic,axis=0)
         frame_ids = torch.cat(frame_ids).long()

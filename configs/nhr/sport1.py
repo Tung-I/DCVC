@@ -1,6 +1,7 @@
 _base_ = '../default.py'
 expname = 'sport1'
-ckptname = 'sport1'
+# ckptname = 'sport1'
+ckptname = None
 wandbprojectname = 'NHR'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/NHR'
 
@@ -23,10 +24,11 @@ fine_model_and_render = dict(
     rgbnet_width=128,
     mpi_depth=192,
 	RGB_model = 'MLP',
-	rgbnet_depth = 3,
+	rgbnet_depth = 2,
 	dynamic_rgbnet = True,
 	viewbase_pe = 4,
 	plane_scale = 3,
+    stepsize=1,
 )
 
 
@@ -46,6 +48,8 @@ fine_train = dict(
 	pg_scale=[1000, 2000, 3000, 4000],
     pg_scale2=[7000, 9000, 11000, 13000],
 	maskout_iter = 14500,
+    save_every = 2000,          # save every save_every steps
+    save_after = 10000,          # save after save_after steps
 )
 
 coarse_train = dict(

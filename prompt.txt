@@ -1,163 +1,993 @@
-Could you leverage your background knowledge to review the model architecture of my sandwich modules:
+Let's moved back to our new codebase based on NeRFCodec's template for a while.
+Now I wish to conduct the same experiments we've done in TeTriRF's codebase: packing the feature plane into png images, running JPEG reconstruction, saving the corrupted feature planes as new checkpoint, and then evaluate the rendering quality on the corrupted checkpoint. 
 
-class BoundedProjector(torch.nn.Module):
+We already implemented such an end-to-end pipeline for DirectVoxGo model. Below is the packing script:
+
+#!/usr/bin/env python3
+import os
+import argparse
+from typing import List, Tuple, Dict
+import copy
+
+import numpy as np
+import torch
+import torch.nn.functional as F
+from tqdm import tqdm
+import cv2
+from PIL import Image
+
+# ***** EXACT same utilities as training *****
+from src.models.model_utils import (
+    DCVC_ALIGN,
+    pack_planes_to_rgb,
+    pack_density_to_rgb,
+)
+
+"""
+python eval_plane_packer.py     --logdir logs/nerf_synthetic/lego_image \
+            --numframe 1 --plane_packing_mode flat4 --grid_packing_mode flatten --qmode global
+"""
+
+# -----------------------------------------------------------------------------
+# helpers
+# -----------------------------------------------------------------------------
+
+def _to16(x: np.ndarray) -> np.ndarray:
+    """float01 -> uint16"""
+    return (np.clip(x, 0, 1) * (2**16 - 1) + 0.5).astype(np.uint16)
+
+def save_png16_rgb(path: str, arr_u16_rgb: np.ndarray) -> None:
     """
-    Map arbitrary features -> [0,1] with learnable scale/bias and a smooth squash.
-    y = sigmoid(exp(log_gain) * x + bias) * (1-2*eps) + eps
+    Save 16-bit PNG with correct on-disk RGB order.
+    We must pass BGR to cv2.imwrite (OpenCV’s convention).
     """
-    def __init__(self, channels: int, eps: float = 1e-3):
-        super().__init__()
-        self.log_gain = torch.nn.Parameter(torch.zeros(1, channels, 1, 1))
-        self.bias     = torch.nn.Parameter(torch.zeros(1, channels, 1, 1))
-        self.eps      = eps
+    if arr_u16_rgb.dtype != np.uint16 or arr_u16_rgb.ndim != 3 or arr_u16_rgb.shape[2] != 3:
+        raise ValueError(f"save_png16_rgb expects HxWx3 uint16, got {arr_u16_rgb.shape} {arr_u16_rgb.dtype}")
+    # CRITICAL: swap RGB -> BGR for OpenCV
+    arr_u16_bgr = arr_u16_rgb[..., ::-1].copy()
+    if not cv2.imwrite(path, arr_u16_bgr):
+        raise RuntimeError(f"Failed to write PNG: {path}")
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        z  = torch.exp(self.log_gain) * x + self.bias
-        y  = torch.sigmoid(z)
-        if self.eps > 0:
-            y = y * (1 - 2*self.eps) + self.eps
-        return y
+# -----------------------------------------------------------------------------
+# CLI
+# -----------------------------------------------------------------------------
+
+def parse_args():
+    p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    p.add_argument("--logdir", required=True, help="Path to Tri-plane checkpoints (.tar files)")
+    p.add_argument("--numframe", type=int, default=20, help="number of frames to convert")
+    p.add_argument("--startframe", type=int, default=0, help="start frame id (inclusive)")
+    p.add_argument("--qmode", type=str, default="global", choices=["global", "per_channel"],
+                   help="quantisation mode")
+    p.add_argument("--orient", choices=["yx", "yz", "xz"], default="xz",
+                   help="(kept for compatibility; not used by packer)")
+    p.add_argument("--plane_packing_mode", choices=["flatten", "mosaic", "flat4"], default="flatten",
+                   help="Packing mode for feature planes (xy/xz/yz)")
+    p.add_argument("--grid_packing_mode", choices=["flatten", "mosaic", "flat4"], default="flatten",
+                   help="Packing mode for density grid")
+    return p.parse_args()
+
+# -----------------------------------------------------------------------------
+# Quantisation (unchanged)
+# -----------------------------------------------------------------------------
+
+GLOBAL_LOW, GLOBAL_HIGH = -20.0, 20.0
+NBITS = 2 ** 16 - 1  # 16-bit PNG
+PLANE_BOUNDS: Dict[str, List[Tuple[float, float]]] = {}  # for per-channel qmode pre-scan
+
+def quantise(feat: torch.Tensor, qmode: str, bounds_out: List[Tuple[float, float]], plane_name=None) -> torch.Tensor:
+    """Quantise *feat* (shape [1, C, H, W]) to [0,1] and round to 16-bit grid."""
+    if qmode == "global":
+        low, high = GLOBAL_LOW, GLOBAL_HIGH
+        bounds_out.extend([(low, high)] * feat.shape[1])
+        norm = (feat - low) / (high - low)
+        return torch.round(norm.clamp(0, 1) * NBITS) / NBITS
+
+    # per-channel
+    C = feat.shape[1]
+    q_ch = []
+    for c in range(C):
+        low, high = PLANE_BOUNDS[plane_name][c]
+        ch        = feat[0, c]
+        bounds_out.append((low, high))
+        norm = (ch.clamp(low, high) - low) / (high - low + 1e-8)
+        q_ch.append(torch.round(norm * NBITS) / NBITS)
+    return torch.stack(q_ch, dim=0).unsqueeze(0).clamp_(0, 1)
+
+# -----------------------------------------------------------------------------
+# main
+# -----------------------------------------------------------------------------
+
+def main():
+    args = parse_args()
+    logdir = args.logdir.rstrip("/")
+
+    # ---------- per-channel bounds pre-scan ----------
+    if args.qmode == "per_channel":
+        print("[INFO] Pre-scanning frames to compute per-channel bounds…")
+        ch_min_max_per_plane: Dict[str, Tuple[List[float], List[float]]] = {}
+
+        for frameid in tqdm(range(args.startframe, args.startframe + args.numframe)):
+            ckpt_path = os.path.join(logdir, f"fine_last_{frameid}.tar")
+            ckpt      = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+
+            density = ckpt["model_state_dict"]["density.grid"].clone()
+            voxel_size_ratio = ckpt["model_kwargs"]["voxel_size_ratio"]
+
+            masks = None
+            if "act_shift" in ckpt["model_state_dict"]:
+                alpha = 1 - (torch.exp(density + ckpt["model_state_dict"]["act_shift"]) + 1) ** (-voxel_size_ratio)
+                alpha = F.max_pool3d(alpha, kernel_size=3, padding=1, stride=1)
+                feature_alpha = F.interpolate(alpha, size=tuple(np.array(density.shape[-3:]) * 3),
+                                              mode="trilinear", align_corners=True)
+                mask_fg = feature_alpha >= 1e-4
+                masks = {"xy": mask_fg.sum(axis=4),
+                         "xz": mask_fg.sum(axis=3),
+                         "yz": mask_fg.sum(axis=2)}
+                masks['xy_plane'] = masks['xy']
+                masks['xz_plane'] = masks['xz']
+                masks['yz_plane'] = masks['yz']
+
+            planes_scan = {k.split(".")[-1]: v.clone()
+                           for k, v in ckpt["model_state_dict"].items()
+                           if "k0" in k and "plane" in k and "residual" not in k}
+
+            for plane, feat_scan in planes_scan.items():
+                if masks is not None:
+                    m = masks[plane].unsqueeze(1).repeat(1, feat_scan.shape[1], 1, 1)
+                    feat_scan = feat_scan.masked_fill(m == 0, 0)
+
+                C_scan = feat_scan.shape[1]
+                if plane not in ch_min_max_per_plane:
+                    ch_min_max_per_plane[plane] = ([float("inf")] * C_scan, [float("-inf")] * C_scan)
+
+                ch_min, ch_max = ch_min_max_per_plane[plane]
+                for c in range(C_scan):
+                    ch         = feat_scan[0, c]
+                    ch_min[c]  = min(ch_min[c],  ch.min().item())
+                    ch_max[c]  = max(ch_max[c],  ch.max().item())
+
+        for plane, (mn, mx) in ch_min_max_per_plane.items():
+            PLANE_BOUNDS[plane] = list(zip(mn, mx))
+
+        print("[INFO] Per-channel bounds (segment-wide, per plane):")
+        for p, lst in PLANE_BOUNDS.items():
+            for idx, (lo, hi) in enumerate(lst):
+                print(f"  {p:>2s}-chan{idx:02d}: [{lo:.4f}, {hi:.4f}]")
+
+    # --- new folder pattern with two modes ---
+    out_root = os.path.join(
+        logdir,
+        f"planeimg_{args.startframe:02d}_{args.startframe + args.numframe - 1:02d}_{args.plane_packing_mode}_{args.grid_packing_mode}_{args.qmode}"
+    )
+    os.makedirs(out_root, exist_ok=True)
+    print(f"[INFO] Saving plane images to {out_root}")
+
+    meta_plane_bounds: Dict[str, List[List[Tuple[float, float]]]] = {}
+    orig_sizes_map: Dict[str, List[Tuple[int,int]]] = {}
+    plane_size: Dict[str, Tuple[int, int, int, int]] = {}
+
+    for frameid in tqdm(range(args.startframe, args.startframe + args.numframe)):
+        ckpt_path = os.path.join(logdir, f"fine_last_{frameid}.tar")
+        if not os.path.isfile(ckpt_path):
+            raise FileNotFoundError(ckpt_path)
+        ckpt = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+
+        # ---- optional mask via density (unchanged) ----
+        density = ckpt["model_state_dict"]["density.grid"].clone()  # [1,1,Dy,Dx,Dz]
+        voxel_size_ratio = ckpt["model_kwargs"]["voxel_size_ratio"]
+        masks = None
+        # if "act_shift" in ckpt["model_state_dict"]:
+        #     alpha = 1 - (torch.exp(density + ckpt["model_state_dict"]["act_shift"]) + 1) ** (-voxel_size_ratio)
+        #     alpha = F.max_pool3d(alpha, kernel_size=3, padding=1, stride=1)
+        #     mask = alpha < 1e-4
+        #     density[mask] = -5
+        #     feature_alpha = F.interpolate(alpha, size=tuple(np.array(density.shape[-3:]) * 3),
+        #                                   mode="trilinear", align_corners=True)
+        #     mask_fg = feature_alpha >= 1e-4
+        #     masks = {
+        #         "xy": mask_fg.sum(axis=4),
+        #         "xz": mask_fg.sum(axis=3),
+        #         "yz": mask_fg.sum(axis=2),
+        #     }
+        #     masks['xy_plane'] = masks['xy']
+        #     masks['xz_plane'] = masks['xz']
+        #     masks['yz_plane'] = masks['yz']
+
+        # ---- feature planes ----
+        planes = {k.split(".")[-1]: v.clone() for k, v in ckpt["model_state_dict"].items()
+                  if "k0" in k and "plane" in k and "residual" not in k}
+
+        for plane_name, feat in planes.items():   # feat: [1, C, H, W]
+            if plane_name not in meta_plane_bounds:
+                meta_plane_bounds[plane_name] = []
+                orig_sizes_map[plane_name] = []
+                plane_size[plane_name] = tuple(feat.shape)
+
+            if masks is not None:
+                m = masks[plane_name].unsqueeze(1).repeat(1, feat.shape[1], 1, 1)
+                feat = feat.masked_fill(m == 0, 0)
+
+            # quantise -> [0,1]
+            bounds_this_plane: List[Tuple[float, float]] = []
+            feat_q = quantise(feat, args.qmode, bounds_this_plane, plane_name=plane_name)
+            meta_plane_bounds[plane_name].append(bounds_this_plane)
+
+            # pack (training-consistent) with plane mode
+            y_pad, orig_hw = pack_planes_to_rgb(feat_q, align=DCVC_ALIGN, mode=args.plane_packing_mode)
+            orig_sizes_map[plane_name].append(tuple(orig_hw))
+
+            # save 16-bit PNG (RGB order on disk)
+            base_dir = os.path.join(out_root, plane_name)
+            os.makedirs(base_dir, exist_ok=True)
+            y_u16 = _to16(y_pad[0].permute(1,2,0).cpu().numpy())  # HxWx3 uint16, RGB
+            save_png16_rgb(os.path.join(base_dir, f"im{frameid + 1:05d}.png"), y_u16)
+
+        # ---- density canvas (uses its OWN mode) ----
+        dens_y_pad, dens_orig = pack_density_to_rgb(density, align=DCVC_ALIGN, mode=args.grid_packing_mode)
+        dens_u16 = _to16(dens_y_pad[0].permute(1,2,0).cpu().numpy())  # HxWx3 uint16, RGB
+        dens_dir = os.path.join(out_root, "density")
+        os.makedirs(dens_dir, exist_ok=True)
+        save_png16_rgb(os.path.join(dens_dir, f"im{frameid + 1:05d}.png"), dens_u16)
+
+        # store original size used before padding (for exact crop on unpack)
+        if "density_orig" not in plane_size:
+            plane_size["density_orig"] = []
+        plane_size["density_orig"].append(tuple(dens_orig))
+
+    # ---- persist meta ----
+    torch.save({
+        "qmode": args.qmode,
+        "bounds": meta_plane_bounds,
+        "nbits": NBITS,
+        "plane_size": plane_size,         # includes per-plane shape + "density_orig" list
+        "orig_sizes": orig_sizes_map,     # per-plane list[(H2,W2)] for feature planes
+        "plane_packing_mode": args.plane_packing_mode,
+        "grid_packing_mode":  args.grid_packing_mode,
+    }, os.path.join(out_root, "planes_frame_meta.nf"))
+
+    print("[DONE] Conversion finished.")
+
+if __name__ == "__main__":
+    main()
+
+def pack_planes_to_rgb(x: torch.Tensor, align: int = DCVC_ALIGN, mode: str = "flatten"):
+    """
+    x : [T, C, H, W], C == 12
+    -> y_pad : [T, 3, H2_pad, W2_pad] ; orig : (H2_orig, W2_orig)
+
+    modes:
+      - "mosaic":   3 groups of 4 channels; F.pixel_shuffle(scale=2) per group -> concat as RGB
+      - "flat4":    3 groups of 4 channels; tile each group into 2x2 mono -> concat as RGB
+      - "flatten":  tile channels to a mono 3x4 grid -> repeat to RGB (legacy)
+    """
+    T, C, H, W = x.shape
+    if mode not in ("mosaic", "flatten", "flat4"):
+        raise ValueError(f"pack: unknown mode '{mode}'")
+    if C != 12:
+        raise ValueError(f"pack: C must be 12 (got {C})")
+
+    if mode == "mosaic":
+        xg = x.view(T, 3, 4, H, W)
+        tiles = [F.pixel_shuffle(xg[:, g], 2) for g in range(3)]  # each [T,1,2H,2W]
+        y = torch.cat(tiles[::-1], dim=1)  # [T,3,2H,2W]  (B,G,R)→RGB-ish
+        h2, w2 = 2 * H, 2 * W
+
+    elif mode == "flat4":
+        # Tile each 4-ch group as 2x2 mono and map to one RGB channel
+        xg = x.view(T, 3, 4, H, W)                                 # [T,3,4,H,W]
+        mono = [rearrange(xg[:, g], 'T (r c) H W -> T 1 (r H) (c W)', r=2, c=2) for g in range(3)]
+        y = torch.cat(mono[::-1], dim=1)                           # [T,3,2H,2W]
+        h2, w2 = 2 * H, 2 * W
+
+    else:  # "flatten"
+        mono = rearrange(x, 'T (r c) H W -> T 1 (r H) (c W)', r=3, c=4)  # [T,1,3H,4W]
+        y = mono.repeat(1, 3, 1, 1)                                      # [T,3,3H,4W]
+        h2, w2 = 3 * H, 4 * W
+
+    # pad
+    pad_h = (align - h2 % align) % align
+    pad_w = (align - w2 % align) % align
+    y_pad = F.pad(y, (0, pad_w, 0, pad_h), mode='replicate')
+    return y_pad, (h2, w2)
 
 
-################################################################################
-# 1×1 MLP (implemented with 1×1 convs)                                         #
-################################################################################
+def pack_density_to_rgb(d5: torch.Tensor, align: int = DCVC_ALIGN, mode: str = "flatten"):
+    """
+    d5: [1,1,Dy,Dx,Dz] (Dz must be 192 for 'mosaic'/'flat4')
+    -> y_pad: [1,3,H2_pad,W2_pad]; orig: (H2_orig,W2_orig)
 
-class Sine(nn.Module):
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return torch.sin(x)
-    
-def create_mlp(
-    in_ch: int,
-    out_ch: int,
-    n_layers: int,
-    hidden: int = 16,
-    act: nn.Module = Sine(),
-) -> nn.Module:
-    """MLP realised with 1x1 convolutions (same weights everywhere)."""
-    if n_layers == 0:
-        return nn.Identity()
+    modes:
+      - "mosaic":
+          • Map to [0,1], permute to [1,Dz,Dy,Dx]
+          • Split to 3 groups of 64, pixel_shuffle(scale=8) per group -> [1,1,8Dy,8Dx]
+          • Concat 3 groups as RGB -> [1,3,8Dy,8Dx]
+      - "flat4":
+          • Map to [0,1], permute to [1,Dz,Dy,Dx]
+          • Split to 3 groups of 64, tile each group into 8x8 mono -> [1,1,8Dy,8Dx]
+          • Concat 3 groups as RGB -> [1,3,8Dy,8Dx]
+      - "flatten" (legacy, unchanged):
+          • Map to [0,1], view as [1,C=Dy,H=Dx,W=Dz], row-wise tile to mono canvas -> repeat to RGB
+    """
+    assert d5.dim() == 5 and d5.shape[:2] == (1, 1), f"expected [1,1,Dy,Dx,Dz], got {tuple(d5.shape)}"
+    _, _, Dy, Dx, Dz = d5.shape
 
-    layers: List[nn.Module] = []
+    if mode not in ("flatten", "mosaic", "flat4"):
+        raise ValueError(f"pack_density_to_rgb: unknown mode '{mode}'")
 
-    cur_in = in_ch
-    for i in range(n_layers):
-        cur_out = out_ch if i == n_layers - 1 else hidden
-        layers.append(nn.Conv2d(cur_in, cur_out, 1))
-        if i != n_layers - 1:
-            layers.append(act)
-        cur_in = cur_out
+    if mode == "flatten":
+        d01 = dens_to01(d5)                       # [1,1,Dy,Dx,Dz]
+        d01_chw = d01.view(1, Dy, Dx, Dz)         # [1,C=Dy,H=Dx,W=Dz]
+        mono, (Hc, Wc) = tile_1xCHW(d01_chw)      # [Hc,Wc]
+        y = mono.unsqueeze(0).repeat(3, 1, 1).unsqueeze(0)  # [1,3,Hc,Wc]
+        h2, w2 = Hc, Wc
 
-    return nn.Sequential(*layers)
+    else:
+        # both "mosaic" and "flat4" need Dz == 192 (3 * 8 * 8)
+        if Dz != 192:
+            raise ValueError(f"{mode} expects Dz=192, got Dz={Dz}")
 
-# ------------------------------------------------------------------
-# A compact UNet that preserves resolution end-to-end
-# (You can replace this with your larger UNet implementation)
-# ------------------------------------------------------------------
-class ConvBlock(nn.Module):
-    def __init__(self, in_ch, out_ch):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, 3, padding=1),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(out_ch, out_ch, 3, padding=1),
-            nn.ReLU(inplace=True),
+        d01 = dens_to01(d5)                                     # [1,1,Dy,Dx,Dz]
+        x = d01.permute(0, 1, 4, 2, 3).reshape(1, Dz, Dy, Dx)   # [1,Dz,Dy,Dx]
+        xg = x.view(1, 3, 64, Dy, Dx)                           # 3 groups of 64
+
+        if mode == "mosaic":
+            # pixel shuffle (scale=8) per group: [1,64,Dy,Dx] -> [1,1,8Dy,8Dx]
+            planes = [F.pixel_shuffle(xg[:, g], 8) for g in range(3)]
+            y = torch.cat(planes[::-1], dim=1)                  # [1,3,8Dy,8Dx] (B,G,R)→RGB-ish)
+        else:  # "flat4"
+            # tile 8x8 channels -> [1,1,8Dy,8Dx]
+            mono = [rearrange(xg[:, g], 'B (r c) H W -> B 1 (r H) (c W)', r=8, c=8) for g in range(3)]
+            y = torch.cat(mono[::-1], dim=1)                    # [1,3,8Dy,8Dx]
+
+        h2, w2 = 8 * Dy, 8 * Dx
+
+    # pad to multiples of `align`
+    pad_h = (align - h2 % align) % align
+    pad_w = (align - w2 % align) % align
+    y_pad = F.pad(y, (0, pad_w, 0, pad_h), mode='replicate')
+    return y_pad, (h2, w2)
+
+
+To apply these to the TensoRF model used in NeRFCodec's codebase, we need to figure out what's the shapes and how to extract and replace the feature planes of the TensoRF model. 
+For, we should be able to fine the answer within TensorVMSplit:
+
+class TensorVMSplit(TensorBase):
+    """
+    Split TensoRF (vector+matrix factorization) with optional adaptor feature-codec.
+
+    This pruned version keeps only what the simplified training script uses:
+      - triplane parameters (density_plane/line, app_plane/line) and rendering
+      - adaptor feature codec (den_feat_codec/app_feat_codec) initialization, warmup, rate (aux) loss
+      - (optional) 'additional_vec' support (off by default)
+      - upsample/shrink + regularizers used by the trainer
+
+    Removed:
+      - image-codec path and 'batchwise_img_coding' strategy
+      - generic forward_with_feature() path
+      - miscellaneous ckpt helpers for image codec
+    """
+
+    # ----------------------------------------------------------------------------------
+    # Lifecyle / flags
+    # ----------------------------------------------------------------------------------
+    def __init__(self, aabb, gridSize, device, **kargs):
+        """
+        Construct triplane volumes and rendering MLP (done by TensorBase).
+        Adds flags that the trainer uses to enable the adaptor feature codec flow.
+        """
+        super(TensorVMSplit, self).__init__(aabb, gridSize, device, **kargs)
+
+        # codec-related flags (used by simplified train.py)
+        self.compression = False
+        self.compression_strategy = kargs.get('compression_strategy', None)  # we only use 'adaptor_feat_coding'
+        self.compress_before_volrend = kargs.get('compress_before_volrend', False)
+        self.mode = "train"
+
+        # generic switches supported by trainer (usually False in your runs)
+        self.using_external_codec = False          # treat pre-compressed planes as inputs
+        self.additional_vec = False                # optional extra line factors
+        self.vec_qat = kargs.get('vec_qat', False)
+        self.decode_from_latent_code = kargs.get('decode_from_latent_code', False)
+
+    # ----------------------------------------------------------------------------------
+    # Adaptor feature codec (the path you use)
+    # ----------------------------------------------------------------------------------
+    def init_feat_codec(
+        self,
+        codec_ckpt_path: str = '',
+        loading_pretrain_param: bool = True,
+        adaptor_q_bit: int = 8,
+        codec_backbone_type: str = "cheng2020-anchor",
+    ):
+        """
+        Initialize *two* adaptors (neural codec backbones from CompressAI, wrapped by our Adaptor):
+          - den_feat_codec: for density planes (channels = density_n_comp[0])
+          - app_feat_codec: for appearance planes (channels = app_n_comp[0])
+
+        Called once in _build_model(...) when --compression and adaptor_feat_coding are enabled.
+        """
+        from .imageCoder import (
+            AdaptorScaleHyperprior, AdaptorMeanScaleHyperprior,
+            AdaptorCheng2020Anchor, AdaptorCheng2020Attention,
         )
-    def forward(self, x): return self.net(x)
+        from compressai.zoo.image import model_urls, cfgs
+        from compressai.zoo.pretrained import load_pretrained
+        from torch.hub import load_state_dict_from_url
+
+        feat_codec_dict = {
+            "bmshj2018-hyperprior": AdaptorScaleHyperprior,
+            "mbt2018-mean":         AdaptorMeanScaleHyperprior,
+            "cheng2020-anchor":     AdaptorCheng2020Anchor,
+            "cheng2020-attn":       AdaptorCheng2020Attention,
+        }
+
+        architecture = codec_backbone_type
+        metric = "mse"
+        # your runs use cheng2020 with quality=6
+        quality = 6
+
+        if self.decode_from_latent_code:
+            raise NotImplementedError("decode_from_latent_code path retained in simplified train.py, "
+                                      "but decoder-only adaptor is not implemented here.")
+
+        feat_codec = feat_codec_dict[architecture]
+
+        # load a pretrained image model's weights as initializer for the adaptors
+        if codec_ckpt_path == "":
+            url = model_urls[architecture][metric][quality]
+            state = load_state_dict_from_url(url, progress=True)
+            state = load_pretrained(state)
+        else:
+            codec_ckpt = torch.load(codec_ckpt_path)
+
+        self.latent_code_ch = cfgs[architecture][quality][-1]
+
+        # density adaptor (channels per plane = self.density_n_comp[0])
+        self.den_feat_codec = feat_codec(self.density_n_comp[0], *cfgs[architecture][quality], q_bit=adaptor_q_bit)
+        if loading_pretrain_param:
+            if codec_ckpt_path == "":
+                self.den_feat_codec.load_state_dict(state, strict=False)
+                self.den_feat_codec.reload_from_pretrained()  # also loads priors
+            else:
+                self.den_feat_codec.load_state_dict(codec_ckpt["den_feat_codec"])
+        self.den_feat_codec.to(self.device)
+
+        # appearance adaptor (channels per plane = self.app_n_comp[0])
+        self.app_feat_codec = feat_codec(self.app_n_comp[0], *cfgs[architecture][quality], q_bit=adaptor_q_bit)
+        if loading_pretrain_param:
+            if codec_ckpt_path == "":
+                self.app_feat_codec.load_state_dict(state, strict=False)
+                self.app_feat_codec.reload_from_pretrained()
+            else:
+                self.app_feat_codec.load_state_dict(codec_ckpt["app_feat_codec"])
+        self.app_feat_codec.to(self.device)
+
+        self.compression = True
+
+        # latent-code path exists in trainer as a toggle, keep helpers initialized if needed
+        if self.decode_from_latent_code:
+            self.latent_z_size = torch.ceil(self.gridSize / 64.0)
+            self.latent_y_size = self.latent_z_size * 4
+            self.den_latent_y, self.den_latent_z = self.init_one_latent_code(
+                self.latent_y_size, self.latent_z_size, 0.1, self.device
+            )
+            self.app_latent_y, self.app_latent_z = self.init_one_latent_code(
+                self.latent_y_size, self.latent_z_size, 0.1, self.device
+            )
+
+    def get_optparam_from_feat_codec(self, lr_transform=1e-4, fix_decoder_prior=False, fix_encoder_prior=False):
+        """
+        At warmup phase, lr_enc_prior = 0, so all “prior” params are frozen. Only the adaptor params train
+        """
+        params_dict = dict(self.named_parameters())
+
+        adaptor_param_list = {
+            name for name, p in self.named_parameters()
+            if p.requires_grad and 'adaptor' in name
+        }
+        prior_param_list = {
+            name for name, p in self.named_parameters()
+            if p.requires_grad and ('codec' in name) and (not name.endswith(".quantiles")) and ('adaptor' not in name)
+        }
+        aux_param_list = {
+            name for name, p in self.named_parameters()
+            if p.requires_grad and name.endswith(".quantiles")
+        }
+
+        if fix_decoder_prior:
+            prior_param_list = [n for n in prior_param_list if ('g_s' not in n and 'h_s' not in n)]
+
+        lr_enc_prior = 0 if fix_encoder_prior else 1e-5
+        print("priors in enc. is fixed" if lr_enc_prior == 0 else "priors in enc. is not fixed")
+
+        grad_vars = [
+            {'params': (params_dict[n] for n in sorted(adaptor_param_list)), 'lr': lr_transform},
+            {'params': (params_dict[n] for n in sorted(prior_param_list)),   'lr': lr_enc_prior},
+        ]
+        aux_grad_vars = [
+            {'params': (params_dict[n] for n in sorted(aux_param_list)), 'lr': 1e-3},
+        ]
+        return grad_vars, aux_grad_vars
+
+    def save_feat_codec_ckpt(self, ckpt_dir):
+        """Utility; not used by simplified train loop but harmless to keep."""
+        torch.save(self.app_feat_codec.state_dict(), f"{ckpt_dir}/app_codec.ckpt")
+        torch.save(self.den_feat_codec.state_dict(), f"{ckpt_dir}/den_codec.ckpt")
+
+    def load_feat_codec_ckpt(self, ckpt_dir):
+        """Utility; not used by simplified train loop but harmless to keep."""
+        self.app_feat_codec.load_state_dict(torch.load(f"{ckpt_dir}/app_codec.ckpt"))
+        self.den_feat_codec.load_state_dict(torch.load(f"{ckpt_dir}/den_codec.ckpt"))
+
+    def get_aux_loss(self):
+        """
+        Aux loss for entropy models (quantile loss).
+        Called every iteration in the codec finetune stage (aux optimizer step).
+        """
+        assert self.compression_strategy == "adaptor_feat_coding", \
+            "Pruned TensorVMSplit only supports adaptor_feat_coding"
+        return self.den_feat_codec.aux_loss() + self.app_feat_codec.aux_loss()
+
+    # ----------------------------------------------------------------------------------
+    # Triplane parameters (init/upsample/shrink) + optional extras
+    # ----------------------------------------------------------------------------------
+    def init_svd_volume(self, res, device):
+        """
+        Allocate triplane parameters:
+          - density_plane/line and app_plane/line (three planes + three lines)
+          - basis_mat to fuse app features into app_dim (for shading)
+        Called by TensorBase.__init__ at construction.
+        """
+        self.density_plane, self.density_line = self.init_one_svd(self.density_n_comp, self.gridSize, 0.1, device)
+        self.app_plane,     self.app_line     = self.init_one_svd(self.app_n_comp,     self.gridSize, 0.1, device)
+        self.basis_mat = torch.nn.Linear(sum(self.app_n_comp), self.app_dim, bias=False).to(device)
+
+    def init_one_svd(self, n_component, gridSize, scale, device):
+        """Helper: create 3 plane tensors and 3 line tensors for a triplane factorization."""
+        plane_coef, line_coef = [], []
+        for i in range(len(self.vecMode)):
+            vec_id = self.vecMode[i]
+            mat_id_0, mat_id_1 = self.matMode[i]
+            plane_coef.append(torch.nn.Parameter(
+                scale * torch.randn((1, n_component[i], gridSize[mat_id_1], gridSize[mat_id_0])))
+            )
+            line_coef.append(torch.nn.Parameter(
+                scale * torch.randn((1, n_component[i], gridSize[vec_id], 1)))
+            )
+        return torch.nn.ParameterList(plane_coef).to(device), torch.nn.ParameterList(line_coef).to(device)
+
+    def init_one_latent_code(self, y_gridSize, z_gridSize, scale, device):
+        """
+        Optional latent-code path (kept since simplified train.py still toggles it).
+        Not used in your standard runs.
+        """
+        latent_code_y, latent_code_z = [], []
+        for i in range(len(self.vecMode)):
+            m0, m1 = self.matMode[i]
+            latent_code_y.append(torch.nn.Parameter(
+                scale * torch.randn((1, self.latent_code_ch, int(y_gridSize[m1]), int(y_gridSize[m0])))))
+            latent_code_z.append(torch.nn.Parameter(
+                scale * torch.randn((1, self.latent_code_ch, int(z_gridSize[m1]), int(z_gridSize[m0])))))
+        return torch.nn.ParameterList(latent_code_y).to(device), torch.nn.ParameterList(latent_code_z).to(device)
+
+    def init_additional_volume(self, device):
+        """
+        Optional extra 'line' features along each axis.
+        Only used if args.additional_vec is True.
+        """
+        self.additional_vec = True
+        self.additional_density_line = self.init_additional_svd(self.density_n_comp, self.gridSize * 2, 0.1, device)
+        self.additional_app_line     = self.init_additional_svd(self.app_n_comp,     self.gridSize * 2, 0.1, device)
+
+    def init_additional_svd(self, n_component, gridSize, scale, device):
+        """Helper for the optional additional_vec path."""
+        line_coef = []
+        for i in range(len(self.vecMode)):
+            line_coef.append(torch.nn.Parameter(scale * torch.randn((1, n_component[i], gridSize[i], 1))))
+        return torch.nn.ParameterList(line_coef).to(device)
+
+    def get_optparam_groups(self, lr_init_spatialxyz=0.02, lr_init_network=0.001, fix_plane=False):
+        """
+        Collect trainable param groups for the main optimizer.
+        Used both in pretraining and codec finetuning.
+
+        If fix_plane=True, planes are frozen (only lines+basis+MLP get updated).
+        """
+        grad_vars = [{'params': self.basis_mat.parameters(), 'lr': lr_init_network}]
+        lr_plane = 0 if fix_plane else lr_init_spatialxyz
+        grad_vars += [
+            {'params': self.density_line, 'lr': lr_init_spatialxyz},
+            {'params': self.density_plane, 'lr': lr_plane},
+            {'params': self.app_line,     'lr': lr_init_spatialxyz},
+            {'params': self.app_plane,    'lr': lr_plane},
+        ]
+        if isinstance(self.renderModule, torch.nn.Module):
+            grad_vars += [{'params': self.renderModule.parameters(), 'lr': lr_init_network}]
+        return grad_vars
+
+    def get_additional_optparam_groups(self, lr_init_spatialxyz=0.02):
+        """Optimizer params for the optional additional_vec path."""
+        return [
+            {'params': self.additional_density_line, 'lr': lr_init_spatialxyz},
+            {'params': self.additional_app_line,     'lr': lr_init_spatialxyz},
+        ]
+
+    def get_latent_code_groups(self, lr_latent_code=0.002):
+        """Optimizer params for the optional latent-code path (not used in your standard runs)."""
+        return [
+            {'params': self.den_latent_y, 'lr': lr_latent_code},
+            {'params': self.den_latent_z, 'lr': lr_latent_code},
+            {'params': self.app_latent_y, 'lr': lr_latent_code},
+            {'params': self.app_latent_z, 'lr': lr_latent_code},
+        ]
+
+    @torch.no_grad()
+    def up_sampling_VM(self, plane_coef, line_coef, res_target):
+        """
+        Bilinear upsample planes/lines to a new triplane resolution.
+        Called inside upsample_volume_grid(...) during progressive training.
+        """
+        for i in range(len(self.vecMode)):
+            vec_id = self.vecMode[i]
+            m0, m1 = self.matMode[i]
+            plane_coef[i] = torch.nn.Parameter(
+                F.interpolate(plane_coef[i].data, size=(res_target[m1], res_target[m0]),
+                              mode='bilinear', align_corners=True))
+            line_coef[i] = torch.nn.Parameter(
+                F.interpolate(line_coef[i].data, size=(res_target[vec_id], 1),
+                              mode='bilinear', align_corners=True))
+        return plane_coef, line_coef
+
+    @torch.no_grad()
+    def upsample_volume_grid(self, res_target):
+        """
+        Public API used by the trainer’s upsample schedule.
+        """
+        self.app_plane,     self.app_line     = self.up_sampling_VM(self.app_plane,     self.app_line,     res_target)
+        self.density_plane, self.density_line = self.up_sampling_VM(self.density_plane, self.density_line, res_target)
+        self.update_stepSize(res_target)
+        print(f'upsamping to {res_target}')
+
+    @torch.no_grad()
+    def shrink(self, new_aabb):
+        """
+        Crop the triplane tensors to a new AABB computed from the alpha mask.
+        Called by the trainer right after first alpha-mask creation.
+        """
+        print("====> shrinking ...")
+        xyz_min, xyz_max = new_aabb
+        t_l, b_r = (xyz_min - self.aabb[0]) / self.units, (xyz_max - self.aabb[0]) / self.units
+        t_l, b_r = torch.round(torch.round(t_l)).long(), torch.round(b_r).long() + 1
+        b_r = torch.stack([b_r, self.gridSize]).amin(0)
+
+        for i in range(len(self.vecMode)):
+            mode0 = self.vecMode[i]
+            self.density_line[i] = torch.nn.Parameter(self.density_line[i].data[..., t_l[mode0]:b_r[mode0], :])
+            self.app_line[i]     = torch.nn.Parameter(self.app_line[i].data[..., t_l[mode0]:b_r[mode0], :])
+            mode0, mode1 = self.matMode[i]
+            self.density_plane[i] = torch.nn.Parameter(
+                self.density_plane[i].data[..., t_l[mode1]:b_r[mode1], t_l[mode0]:b_r[mode0]])
+            self.app_plane[i] = torch.nn.Parameter(
+                self.app_plane[i].data[..., t_l[mode1]:b_r[mode1], t_l[mode0]:b_r[mode0]])
+
+        # correct aabb if alpha volume grid differs from current gridSize
+        if not torch.all(self.alphaMask.gridSize == self.gridSize):
+            t_l_r, b_r_r = t_l / (self.gridSize - 1), (b_r - 1) / (self.gridSize - 1)
+            correct_aabb = torch.zeros_like(new_aabb)
+            correct_aabb[0] = (1 - t_l_r) * self.aabb[0] + t_l_r * self.aabb[1]
+            correct_aabb[1] = (1 - b_r_r) * self.aabb[0] + b_r_r * self.aabb[1]
+            print("aabb", new_aabb, "\ncorrect aabb", correct_aabb)
+            new_aabb = correct_aabb
+
+        newSize = b_r - t_l
+        self.aabb = new_aabb
+        self.update_stepSize((newSize[0], newSize[1], newSize[2]))
+
+    # ----------------------------------------------------------------------------------
+    # Rendering-time feature gathering (used by TensorBase.forward)
+    # ----------------------------------------------------------------------------------
+    def enable_vec_qat(self):
+        """
+        Enable/disable vector quantization-aware training (line features only).
+        Trainer calls this once after building the model.
+        """
+        if self.vec_qat:
+            print("Vector, QAT, bitwidth: 8 bits")
+            self.q_fn = lambda x: qfn2.apply(x, 8)
+        else:
+            self.q_fn = torch.nn.Identity()
+
+    def compress_with_external_codec(self, den_feat_codec, app_feat_codec, mode="train"):
+        """
+        Compress (or pseudo-compress during training) each plane with the given codec(s),
+        and store the reconstructed planes in self.{den,app}_rec_plane (list of 3 tensors).
+        The trainer calls this at each step when --compress_before_volrend is set.
+
+        Returns a dict with reconstructed planes + likelihood packs (for rate / aux).
+        """
+        self.map_fn = torch.nn.Tanh()
+
+        # density planes
+        self.den_rec_plane, self.den_likelihood = [], []
+        for i in range(len(self.density_plane)):
+            rec_plane, likelihood = self.feature_compression_via_feat_coder(
+                self.map_fn(self.density_plane[i]), den_feat_codec, mode=mode)
+            self.den_rec_plane.append(rec_plane)
+            self.den_likelihood.append(likelihood)
+
+        # appearance planes
+        self.app_rec_plane, self.app_likelihood = [], []
+        for i in range(len(self.app_plane)):
+            rec_plane, likelihood = self.feature_compression_via_feat_coder(
+                self.map_fn(self.app_plane[i]), app_feat_codec, mode=mode)
+            self.app_rec_plane.append(rec_plane)
+            self.app_likelihood.append(likelihood)
+
+        return {
+            "den": {"rec_planes": self.den_rec_plane, "rec_likelihood": self.den_likelihood},
+            "app": {"rec_planes": self.app_rec_plane, "rec_likelihood": self.app_likelihood},
+        }
 
 
-class SmallUNet(nn.Module):
-    """
-    Robust to arbitrary H×W:
-      - Encoder downsamples with ceil_mode=True (keeps last row/col when odd).
-      - Decoder upsamples to the *exact* target size (no scale_factor ambiguities).
-      - Skip path stays at full res; we only 1x1-project channels (no stride).
-    """
-    def __init__(self, in_ch, out_ch, base=32):
-        super().__init__()
-        F = base
-        # encoder
-        self.enc1 = ConvBlock(in_ch, F)             # -> [B,F,H,W]
-        self.pool = nn.AvgPool2d(2, ceil_mode=True) # -> [B,F,ceil(H/2),ceil(W/2)]
-        self.enc2 = ConvBlock(F, 2*F)               # -> [B,2F,···]
+    def feature_compression_via_feat_coder(self, plane, feat_codec, return_likelihoods=True, mode="train"):
+        """
+        Core 'adaptor_feat_coding' op:
+          - per-plane min-max normalize
+          - pad spatially to 64-aligned size
+          - run codec.forward() during training, codec.compress/decompress() during eval
+          - unpad and denormalize
 
-        # bottleneck
-        self.bot  = ConvBlock(2*F, 2*F)             # -> [B,2F,···]
+        Used by compress_with_external_codec() and by latent-code decoder path.
+        """
+        # per-plane min/max over spatial dims
+        min_vec, _ = torch.min(plane.view(*plane.shape[:2], -1), dim=-1)
+        max_vec, _ = torch.max(plane.view(*plane.shape[:2], -1), dim=-1)
+        min_vec, max_vec = min_vec.view([*min_vec.shape, 1, 1]), max_vec.view([*max_vec.shape, 1, 1])
+        norm_plane = (plane - min_vec) / (max_vec - min_vec + 1e-8)
 
-        # skip projection (no spatial change)
-        self.skip_proj = nn.Conv2d(F, F, kernel_size=1)
+        # pad to multiples of 2^6
+        h, w = norm_plane.size(2), norm_plane.size(3)
+        pad, unpad = compute_padding(h, w, min_div=2 ** 6)
+        norm_plane_padded = F.pad(norm_plane, pad, mode="constant", value=0)
 
-        # decoder
-        self.dec1 = ConvBlock(2*F + F, F)           # concat(upsampled, skip)
-        self.out  = nn.Conv2d(F, out_ch, 3, padding=1)
+        if mode == "train":
+            out_net = feat_codec.forward(norm_plane_padded)
+        else:
+            out_enc = feat_codec.compress(norm_plane_padded)
 
-    def forward(self, x):
-        s1 = self.enc1(x)                                  # [B,F,H,W]
-        x2 = self.pool(s1)                                 # [B,F,ceil(H/2),ceil(W/2)]
-        x2 = self.enc2(x2)                                 # [B,2F,···]
-        b  = self.bot(x2)                                  # [B,2F,···]
+            # --- robust byte counter for nested lists/tuples of byte strings ---
+            def _count_bytes(obj):
+                try:
+                    import torch, numpy as np
+                except Exception:
+                    torch, np = None, None
 
-        # upsample decoder activations to match s1 exactly
-        up   = torch.nn.functional.interpolate(
-            b, size=s1.shape[2:], mode='bilinear', align_corners=False
-        )                                                  # [B,2F,H,W]
+                # bytes-like
+                if isinstance(obj, (bytes, bytearray, memoryview)):
+                    return len(obj)
 
-        skip = self.skip_proj(s1)                          # [B,F,H,W]
-        x    = torch.cat([up, skip], dim=1)                # [B,2F+F,H,W]
-        x    = self.dec1(x)                                # [B,F,H,W]
-        return self.out(x)                                 # [B,out_ch,H,W]
+                # nested containers
+                if isinstance(obj, (list, tuple)):
+                    return sum(_count_bytes(x) for x in obj)
 
+                # python str (some compressai builds return str for y_strings)
+                if isinstance(obj, str):
+                    # latin-1 preserves length 1:1 for 0..255
+                    try:
+                        return len(obj.encode("latin-1", errors="ignore"))
+                    except Exception:
+                        return len(obj)
 
-Since we target at video streaming scenario, these module must be sent along with the video of a scene so they cannot be too large. However, without enough model capacity, the module may not be able to handle xy/yz/xz planes simultaneously as each type of feature plane has completely different patterns. 
+                # torch uint8 tensor
+                if torch is not None and torch.is_tensor(obj) and obj.dtype == torch.uint8:
+                    return int(obj.numel())
 
-Of course, without experiment we won't know which model architecture works best for this novel task (i.e., convert feature planes to codec-friendly rgb images). Still, I wish you to propose a most feasible solution in your mind. 
+                # numpy uint8 array
+                if (("np" in locals() and np is not None)
+                        and isinstance(obj, np.ndarray)
+                        and obj.dtype == np.uint8):
+                    return int(obj.size)
 
-As a reminder, below are the utiliy functions that convert normalized feature planes to three-channel images:
+                raise ValueError(f"Cannot count bytes of object type {type(obj)}")
+                return 0
+            
+            total_bytes = _count_bytes(out_enc["strings"])
 
-def sandwich_planes_to_rgb(
-    x01: torch.Tensor,                            # [T,C,H,W] in [0,1]
-    pre_unet: torch.nn.Module,                   # SmallUNet(C->3)
-    pre_mlp: torch.nn.Module,                    # MLP 1x1 (C->3)
-    bound_pre: torch.nn.Module,                  # BoundedProjector(3)
-    align: int,                                  # DCVC_ALIGN
-) -> Tuple[torch.Tensor, Tuple[int,int]]:
-    """
-    Learned pack: [T,C,H,W] -> y_pad [T,3,Hp,Wp], returns orig (H, W).
-    """
-    assert x01.dim() == 4, f"expected [T,C,H,W], got {x01.shape}"
-    T, C, H, W = x01.shape
+            out_dec = feat_codec.decompress(out_enc["strings"], out_enc["shape"])
+            out_net = out_dec
+            out_net["strings_length_bytes"] = int(total_bytes)
 
-    # run per frame; keep it batched over T
-    y3 = pre_mlp(x01) + pre_unet(x01)           # [T,3,H,W]
-    y01 = bound_pre(y3)                          # [T,3,H,W] in [0,1]
+        # unpad + denorm
+        out_net["x_hat"] = F.pad(out_net["x_hat"], unpad)
+        out_net["x_hat"] = out_net["x_hat"].reshape([1, -1, h, w])
+        rec_plane = out_net["x_hat"] * (max_vec - min_vec + 1e-8) + min_vec
 
-    # pad to multiples of align
-    pad_h = (align - H % align) % align
-    pad_w = (align - W % align) % align
-    if pad_h or pad_w:
-        y_pad = F.pad(y01, (0, pad_w, 0, pad_h), mode="replicate")
-    else:
-        y_pad = y01
-    return y_pad, (H, W)
+        rec_plane = torch.nan_to_num(rec_plane, nan=0.0, posinf=0.0, neginf=0.0)
 
+        return (rec_plane, out_net) if return_likelihoods else (rec_plane, None)
 
-def sandwich_rgb_to_planes(
-    y_hat: torch.Tensor,                          # [T,3,Hp,Wp], decoder output (float in [0,1])
-    orig_size: Tuple[int,int],                    # (H, W) before pad (from sandwich_planes_to_rgb)
-    post_unet: torch.nn.Module,                  # SmallUNet(3->C)
-    post_mlp: torch.nn.Module,                   # MLP 1x1 (3->C)
-    post_bound: Optional[torch.nn.Module] = None # optional BoundedProjector(C)
-) -> torch.Tensor:
-    """
-    Learned unpack: crop pad -> postprocess to [T,C,H,W] (ideally still in [0,1]).
-    """
-    H, W = orig_size
-    y = y_hat[..., :H, :W]                       # [T,3,H,W]
+    def decode_single_plane(self, y, z, feat_codec, target_plane_size, mode="train"):
+        """
+        Latent-code variant: decode one plane from (y,z) latents using the adaptor.
+        Kept because simplified train.py still toggles --decode_from_latent_code.
+        """
+        h, w = target_plane_size[2], target_plane_size[3]
+        pad, unpad = compute_padding(h, w, min_div=2 ** 6)
 
-    x_rec = post_mlp(y) + post_unet(y)           # [T,C,H,W]
-    if post_bound is not None:
-        x_rec = post_bound(x_rec)                # keep it in [0,1] if you prefer
-    else:
-        # safe clamp for stability since codec can introduce tiny overshoots
-        x_rec = x_rec.clamp_(0.0, 1.0)
-    return x_rec
+        if mode == "train":
+            out_net = feat_codec.forward(y, z)
+        else:
+            out_enc = feat_codec.compress(y, z)
+            out_dec = feat_codec.decompress(out_enc["strings"], out_enc["shape"])
+            out_net = out_dec
+            out_net.update({"strings_length": sum(len(s[0]) for s in out_enc["strings"])})
+
+        out_net["x_hat"] = F.pad(out_net["x_hat"], unpad)
+        out_net["x_hat"] = out_net["x_hat"].reshape([1, -1, h, w])
+        return out_net
+
+    def decode_all_planes(self, mode="train"):
+        """
+        Latent-code variant: decode all 3 planes for density and appearance.
+        Returns same structure as compress_with_external_codec(...).
+        """
+        self.map_fn = torch.nn.Tanh()
+        self.den_rec_plane, self.den_likelihood = [], []
+        for i in range(len(self.density_plane)):
+            out_net = self.decode_single_plane(
+                self.den_latent_y[i], self.den_latent_z[i], self.den_feat_codec,
+                self.density_plane[i].size(), mode=mode
+            )
+            self.den_rec_plane.append(out_net["x_hat"])
+            self.den_likelihood.append(out_net)
+
+        self.app_rec_plane, self.app_likelihood = [], []
+        for i in range(len(self.app_plane)):
+            out_net = self.decode_single_plane(
+                self.app_latent_y[i], self.app_latent_z[i], self.app_feat_codec,
+                self.app_plane[i].size(), mode=mode
+            )
+            self.app_rec_plane.append(out_net["x_hat"])
+            self.app_likelihood.append(out_net)
+
+        return {
+            "den": {"rec_planes": self.den_rec_plane, "rec_likelihood": self.den_likelihood},
+            "app": {"rec_planes": self.app_rec_plane, "rec_likelihood": self.app_likelihood},
+        }
+
+    # ----------------------------------------------------------------------------------
+    # Feature sampling for volume rendering
+    # ----------------------------------------------------------------------------------
+    def compute_densityfeature(self, xyz_sampled):
+        """
+        Sample density feature at normalized coords and fuse plane/line factors.
+
+        Two modes:
+          - compression+compress_before_volrend: read plane coeffs from reconstructed planes
+          - else: read plane coeffs from raw learnable planes
+
+        Called inside TensorBase.forward(...) during both training and evaluation.
+        """
+        self.map_fn = torch.nn.Identity()  # keep density planes unbounded (match original)
+
+        # build sampling coords for the three planes and three lines
+        coordinate_plane = torch.stack((
+            xyz_sampled[..., self.matMode[0]],
+            xyz_sampled[..., self.matMode[1]],
+            xyz_sampled[..., self.matMode[2]],
+        )).detach().view(3, -1, 1, 2)
+        coordinate_line = torch.stack((
+            xyz_sampled[..., self.vecMode[0]],
+            xyz_sampled[..., self.vecMode[1]],
+            xyz_sampled[..., self.vecMode[2]],
+        ))
+        coordinate_line = torch.stack((torch.zeros_like(coordinate_line), coordinate_line), dim=-1).detach().view(3, -1, 1, 2)
+
+        if self.additional_vec:
+            add_coordinate_line = torch.stack((xyz_sampled[..., 0], xyz_sampled[..., 1], xyz_sampled[..., 2]))
+            add_coordinate_line = torch.stack((torch.zeros_like(add_coordinate_line), add_coordinate_line), dim=-1).detach().view(3, -1, 1, 2)
+
+        sigma_feature = torch.zeros((xyz_sampled.shape[0],), device=xyz_sampled.device)
+
+        for i in range(len(self.density_plane)):
+            # choose plane source: reconstructed or raw learnable
+            if self.compression and (self.compress_before_volrend or self.using_external_codec):
+                if self._noise_enabled():
+                    plane_src = self._noise_op(
+                        self.density_plane[i], 
+                        self.noise_cfg["mode"], 
+                        self.noise_cfg["level"], 
+                        self.noise_cfg["seed"], 
+                        plane_idx=i
+                    )
+                else:
+                    plane_src = self.den_rec_plane[i]
+            else:
+                plane_src = self.map_fn(self.density_plane[i])
+
+            plane_coef_point = F.grid_sample(plane_src, coordinate_plane[[i]], align_corners=True).view(-1, *xyz_sampled.shape[:1])
+
+            if self.additional_vec:
+                m0, m1 = self.matMode[i]
+                fst_add = F.grid_sample(self.q_fn(self.map_fn(self.additional_density_line[m0])),
+                                        add_coordinate_line[[m0]], align_corners=True).view(-1, *xyz_sampled.shape[:1])
+                sec_add = F.grid_sample(self.q_fn(self.map_fn(self.additional_density_line[m1])),
+                                        add_coordinate_line[[m1]], align_corners=True).view(-1, *xyz_sampled.shape[:1])
+                plane_coef_point += (fst_add * sec_add)
+
+            # line factors (optionally QAT-ed)
+            if self.compression and self.vec_qat:
+                line_src = self.q_fn(self.map_fn(self.density_line[i]))
+            else:
+                line_src = self.map_fn(self.density_line[i])
+            line_coef_point = F.grid_sample(line_src, coordinate_line[[i]], align_corners=True).view(-1, *xyz_sampled.shape[:1])
+
+            sigma_feature = sigma_feature + torch.sum(plane_coef_point * line_coef_point, dim=0)
+
+        return sigma_feature
+
+    def compute_appfeature(self, xyz_sampled):
+        """
+        Sample appearance feature at normalized coords and fuse via basis_mat.
+
+        Same source switching as density: reconstructed planes if we compressed before volume
+        rendering; otherwise use raw learnable planes. App planes pass through tanh as in original.
+        """
+        self.map_fn = torch.nn.Tanh()
+
+        coordinate_plane = torch.stack((
+            xyz_sampled[..., self.matMode[0]],
+            xyz_sampled[..., self.matMode[1]],
+            xyz_sampled[..., self.matMode[2]],
+        )).detach().view(3, -1, 1, 2)
+        coordinate_line = torch.stack((
+            xyz_sampled[..., self.vecMode[0]],
+            xyz_sampled[..., self.vecMode[1]],
+            xyz_sampled[..., self.vecMode[2]],
+        ))
+        coordinate_line = torch.stack((torch.zeros_like(coordinate_line), coordinate_line), dim=-1).detach().view(3, -1, 1, 2)
+
+        if self.additional_vec:
+            add_coordinate_line = torch.stack((xyz_sampled[..., 0], xyz_sampled[..., 1], xyz_sampled[..., 2]))
+            add_coordinate_line = torch.stack((torch.zeros_like(add_coordinate_line), add_coordinate_line), dim=-1).detach().view(3, -1, 1, 2)
+
+        plane_coef_point, line_coef_point = [], []
+        for i in range(len(self.app_plane)):
+            if self.compression and (self.compress_before_volrend or self.using_external_codec):
+                if self._noise_enabled():
+                    plane_src = self._noise_op(
+                        torch.tanh(self.app_plane[i]),
+                        self.noise_cfg["mode"],
+                        self.noise_cfg["level"],
+                        self.noise_cfg["seed"],
+                        plane_idx=100 + i  # different stream
+                    )
+                else:
+                    plane_src = self.app_rec_plane[i]
+            else:
+                plane_src = self.map_fn(self.app_plane[i])
+
+            p = F.grid_sample(plane_src, coordinate_plane[[i]], align_corners=True).view(-1, *xyz_sampled.shape[:1])
+
+            if self.additional_vec:
+                m0, m1 = self.matMode[i]
+                fst_add = F.grid_sample(self.q_fn(self.map_fn(self.additional_app_line[m0])),
+                                        add_coordinate_line[[m0]], align_corners=True).view(-1, *xyz_sampled.shape[:1])
+                sec_add = F.grid_sample(self.q_fn(self.map_fn(self.additional_app_line[m1])),
+                                        add_coordinate_line[[m1]], align_corners=True).view(-1, *xyz_sampled.shape[:1])
+                p += (fst_add * sec_add)
+
+            plane_coef_point.append(p)
+
+            if self.compression and self.vec_qat:
+                line_src = self.q_fn(self.map_fn(self.app_line[i]))
+            else:
+                line_src = self.map_fn(self.app_line[i])
+            line_coef_point.append(F.grid_sample(line_src, coordinate_line[[i]], align_corners=True).view(-1, *xyz_sampled.shape[:1]))
+
+        plane_coef_point = torch.cat(plane_coef_point)
+        line_coef_point  = torch.cat(line_coef_point)
+        return self.basis_mat((plane_coef_point * line_coef_point).T)
+
+Thus, can you show me how to modify the offline plane packing script for TensoRF so that I can also visualize the feature planes trained in NeRFCodec's codebase and then perform offline JPEG reconstruction afterwards?

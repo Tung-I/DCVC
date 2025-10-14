@@ -212,44 +212,44 @@ def pack_density_to_rgb(d5: torch.Tensor, align: int = DCVC_ALIGN, mode: str = "
     return y_pad, (h2, w2)
 
 
-def unpack_rgb_to_planes(y_pad: torch.Tensor, C: int, orig_size: Tuple[int, int], mode: str = "flatten"):
-    """
-    y_pad : [T,3,H2_pad,W2_pad]  (from pack_planes_to_rgb)
-    C     : must be 12
-    orig_size : (H2_orig, W2_orig)  (returned by pack)
-    -> x : [T,C,H,W] in [0,1]
-    """
-    if mode not in ("mosaic", "flatten", "flat4"):
-        raise ValueError(f"unpack: unknown mode '{mode}'")
-    if C != 12:
-        raise ValueError(f"unpack expects C==12 (got {C})")
+# def unpack_rgb_to_planes(y_pad: torch.Tensor, C: int, orig_size: Tuple[int, int], mode: str = "flatten"):
+#     """
+#     y_pad : [T,3,H2_pad,W2_pad]  (from pack_planes_to_rgb)
+#     C     : must be 12
+#     orig_size : (H2_orig, W2_orig)  (returned by pack)
+#     -> x : [T,C,H,W] in [0,1]
+#     """
+#     if mode not in ("mosaic", "flatten", "flat4"):
+#         raise ValueError(f"unpack: unknown mode '{mode}'")
+#     if C != 12:
+#         raise ValueError(f"unpack expects C==12 (got {C})")
 
-    H2, W2 = orig_size
-    y = y_pad[..., :H2, :W2]  # remove padding
+#     H2, W2 = orig_size
+#     y = y_pad[..., :H2, :W2]  # remove padding
 
-    if mode == "mosaic":
-        # split RGB, unshuffle (scale=2), concat in channel order (r,g,b)
-        b, g, r = y.split(1, dim=1)
-        blocks = [F.pixel_unshuffle(ch, 2) for ch in (r, g, b)]  # each -> [T,4,H,W]
-        return torch.cat(blocks, dim=1)                           # [T,12,H,W]
+#     if mode == "mosaic":
+#         # split RGB, unshuffle (scale=2), concat in channel order (r,g,b)
+#         b, g, r = y.split(1, dim=1)
+#         blocks = [F.pixel_unshuffle(ch, 2) for ch in (r, g, b)]  # each -> [T,4,H,W]
+#         return torch.cat(blocks, dim=1)                           # [T,12,H,W]
 
-    if mode == "flat4":
-        # inverse of: rearrange(..., 'T (r c) H W -> T 1 (r H) (c W)', r=2,c=2), RGB order was reversed at pack
-        b, g, r = y.split(1, dim=1)  # [T,1,2H,2W]
-        def inv_tile_2x2(ch):
-            return rearrange(ch, 'T 1 (r H) (c W) -> T (r c) H W', r=2, c=2)
-        groups = [inv_tile_2x2(r), inv_tile_2x2(g), inv_tile_2x2(b)]  # each [T,4,H,W]
-        return torch.cat(groups, dim=1)  # [T,12,H,W]
+#     if mode == "flat4":
+#         # inverse of: rearrange(..., 'T (r c) H W -> T 1 (r H) (c W)', r=2,c=2), RGB order was reversed at pack
+#         b, g, r = y.split(1, dim=1)  # [T,1,2H,2W]
+#         def inv_tile_2x2(ch):
+#             return rearrange(ch, 'T 1 (r H) (c W) -> T (r c) H W', r=2, c=2)
+#         groups = [inv_tile_2x2(r), inv_tile_2x2(g), inv_tile_2x2(b)]  # each [T,4,H,W]
+#         return torch.cat(groups, dim=1)  # [T,12,H,W]
 
-    # mode == "flatten"
-    # y is mono repeated 3×; take first channel and invert 3×4 tiling
-    mono = y[:, :1]  # [T,1,3H,4W]
-    if H2 % 3 != 0 or W2 % 4 != 0:
-        raise ValueError(f"unpack(flatten): orig_size {(H2,W2)} not divisible by (3,4)")
-    H = H2 // 3
-    W = W2 // 4
-    x = rearrange(mono, 'T 1 (r H) (c W) -> T (r c) H W', r=3, c=4, H=H, W=W)  # [T,12,H,W]
-    return x
+#     # mode == "flatten"
+#     # y is mono repeated 3×; take first channel and invert 3×4 tiling
+#     mono = y[:, :1]  # [T,1,3H,4W]
+#     if H2 % 3 != 0 or W2 % 4 != 0:
+#         raise ValueError(f"unpack(flatten): orig_size {(H2,W2)} not divisible by (3,4)")
+#     H = H2 // 3
+#     W = W2 // 4
+#     x = rearrange(mono, 'T 1 (r H) (c W) -> T (r c) H W', r=3, c=4, H=H, W=W)  # [T,12,H,W]
+#     return x
 
 
 # -------------------------------------------------------

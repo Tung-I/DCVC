@@ -164,6 +164,7 @@ class Trainer:
 
             # Each entry in the returned lists corresponds to a single view 
             # (have the same fid)
+
             rgb, ro, rd, vd, imsz, fids = dvgo.get_training_rays_multi_frame(
                 rgb_tr_ori=rgb_ori,
                 train_poses=poses[t_train],

@@ -171,7 +171,7 @@ class Trainer:
         for fid in uniq_ids:
             if fid in model.fixed_frame:
                 continue
-            mask     = (frame_ids == fid)[data['i_train']]
+            mask     = (frame_ids == fid)[data['i_train']] 
             t_train  = np.array(data['i_train'])[mask]
             rgb_ori  = data['images'][t_train].to('cpu' if cfg.data.load2gpu_on_the_fly
                                                 else device)
@@ -367,7 +367,6 @@ class Trainer:
     
     @torch.no_grad()
     def _eval_test_psnr(self, frame_id: int) -> Optional[float]:
-        # collect indices of this frame within i_test
         i_test = self.data['i_test']
         frame_ids = self.data['frame_ids']
         mask = (frame_ids == frame_id)[i_test]
@@ -377,6 +376,15 @@ class Trainer:
         t_test = np.array(i_test)[mask]
         if len(t_test) == 0:
             return None  # no test views for this frame
+
+         # --- subsample for speed ---
+        stride = int(getattr(self.cfg.fine_train, "test_subsample_stride", 10))
+        vmax   = int(getattr(self.cfg.fine_train, "test_subsample_max", 20))
+        t_test = t_test[::max(1, stride)]
+        # print(t_test)
+        # raise Exception()
+        if len(t_test) > vmax:
+            t_test = t_test[:vmax]
 
         HW = self.data['HW']; Ks = self.data['Ks']; poses = self.data['poses']
         imgs = self.data['images']
