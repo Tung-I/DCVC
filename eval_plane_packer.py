@@ -21,6 +21,8 @@ from src.models.model_utils import (
 """
 python eval_plane_packer.py     --logdir logs/nerf_synthetic/lego_image \
             --numframe 1 --plane_packing_mode flat4 --grid_packing_mode flatten --qmode global
+python eval_plane_packer.py     --logdir logs/dynerf_flame_steak/av1_qp20 \
+            --numframe 1 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global
 """
 
 # -----------------------------------------------------------------------------

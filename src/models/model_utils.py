@@ -5,10 +5,243 @@ import numpy as np
 import torch.nn.functional as F
 import math
 import cv2
-from typing import Tuple, Optional
+from typing import Tuple, Optional, List
+import av, io
+from fractions import Fraction
 
 DCVC_ALIGN = 32
 
+
+# --- PyAV video round-trip helpers (HEVC / AV1 / VP9) ---
+
+def _pyav_video_roundtrip(
+    canvases_cpu_f01: torch.Tensor,   # [T,3,H,W] or [T,1,H,W], float in [0,1], CPU
+    *,
+    encoder: str,                     # "libx265" | "libaom-av1" | "libvpx-vp9"
+    container: str,                   # "hevc" | "ivf" | "webm"
+    pix_fmt: str,                     # e.g. "yuv444p" (ignored if grayscale=True)
+    fps: int,
+    gop: int,
+    options: dict | None = None,
+    force_bitrate0: bool = False,     # generally not needed in QP mode
+    grayscale: bool = False,          # NEW: true monochrome (1-plane) path
+) -> Tuple[torch.Tensor, int]:
+    """
+    Encode RGB-like or grayscale canvases to a bytestream (in-memory) and decode back.
+    Returns: (decoded [T,C,H,W] float[0,1] CPU, total_bit_count), where C == 3 (color) or 1 (gray).
+    """
+    assert canvases_cpu_f01.device.type == "cpu", "Pass CPU tensor"
+    assert canvases_cpu_f01.ndim == 4 and canvases_cpu_f01.shape[1] in (1, 3)
+    if grayscale:
+        assert canvases_cpu_f01.shape[1] == 1, "grayscale=True expects input shape [T,1,H,W]"
+    else:
+        assert canvases_cpu_f01.shape[1] == 3, "color path expects input shape [T,3,H,W]"
+
+    T, C_in, H, W = map(int, canvases_cpu_f01.shape)
+    target_pix_fmt = "gray" if grayscale else pix_fmt
+
+    # ---- Encode ----
+    out_buf = io.BytesIO()
+    oc = av.open(out_buf, mode="w", format=container)
+
+    stream = oc.add_stream(encoder, rate=int(fps))
+    stream.width = W
+    stream.height = H
+    stream.time_base = Fraction(1, int(fps))
+    stream.codec_context.time_base = Fraction(1, int(fps))
+    stream.gop_size = int(gop)
+    stream.pix_fmt = target_pix_fmt
+
+    if force_bitrate0:
+        stream.codec_context.bit_rate = 0
+
+    if options:
+        for k, v in options.items():
+            stream.codec_context.options[str(k)] = str(v)
+
+    # Encode all frames
+    for t in range(T):
+        if grayscale:
+            frm_u8 = (canvases_cpu_f01[t, 0]
+                      .clamp(0, 1)
+                      .contiguous()
+                      .numpy() * 255.0 + 0.5).astype(np.uint8)        # [H,W]
+            vf = av.VideoFrame.from_ndarray(frm_u8, format="gray")
+        else:
+            frm_u8 = (canvases_cpu_f01[t]
+                      .clamp(0, 1)
+                      .permute(1, 2, 0)                                # H W 3
+                      .contiguous()
+                      .numpy() * 255.0 + 0.5).astype(np.uint8)
+            vf = av.VideoFrame.from_ndarray(frm_u8, format="rgb24")
+            vf = vf.reformat(format=target_pix_fmt)                    # rgb24 -> yuv444p (or any color fmt)
+
+        # for gray, vf already 'gray'; no reformat needed
+        for packet in stream.encode(vf):
+            oc.mux(packet)
+
+    # Flush
+    for packet in stream.encode(None):
+        oc.mux(packet)
+    oc.close()
+
+    bitstream = out_buf.getvalue()
+    total_bits = len(bitstream) * 8
+
+    # ---- Decode ----
+    in_buf = io.BytesIO(bitstream)
+    ic = av.open(in_buf, mode="r")
+    rec_frames: List[torch.Tensor] = []
+    for frame in ic.decode(video=0):
+        if grayscale:
+            g = frame.to_ndarray(format="gray")                       # [H,W] uint8
+            rec_frames.append(torch.from_numpy(g)[None, ...].float().div_(255.0))  # [1,H,W]
+        else:
+            rgb = frame.to_ndarray(format="rgb24")                    # [H,W,3]
+            rec_frames.append(torch.from_numpy(rgb).permute(2, 0, 1).float().div_(255.0))  # [3,H,W]
+    ic.close()
+
+    if len(rec_frames) != T:
+        raise RuntimeError(f"Decoded {len(rec_frames)} frames, expected {T}")
+
+    rec = torch.stack(rec_frames, dim=0)  # [T,C,H,W]
+    if tuple(rec.shape[-2:]) != (H, W):
+        raise RuntimeError(f"Roundtrip size mismatch: in ({H},{W}) vs out {tuple(rec.shape[-2:])}")
+
+    return rec, total_bits
+
+
+def hevc_video_roundtrip(
+    canvases_cpu_f01: torch.Tensor,
+    *,
+    fps: int,
+    gop: int,
+    qp: int,
+    preset: str = "medium",
+    pix_fmt: str = "yuv444p",
+    grayscale: bool = False,   # NEW
+) -> Tuple[torch.Tensor, int]:
+    """
+    HEVC (libx265) **constant QP** via x265-params qp=...
+    Raw Annex-B stream with VPS/SPS/PPS (repeat-headers=1) for robust decoding.
+    """
+    x265_params = f"repeat-headers=1:keyint={int(gop)}:min-keyint={int(gop)}:scenecut=0:qp={int(qp)}"
+    opts = {
+        "preset": str(preset),
+        "x265-params": x265_params,
+    }
+    return _pyav_video_roundtrip(
+        canvases_cpu_f01,
+        encoder="libx265",
+        container="hevc",
+        pix_fmt=pix_fmt,
+        fps=fps,
+        gop=gop,
+        options=opts,
+        force_bitrate0=False,
+        grayscale=grayscale,
+    )
+
+
+def av1_video_roundtrip(
+    canvases_cpu_f01: torch.Tensor,
+    *,
+    fps: int,
+    gop: int,
+    qp: int,                    # 0..63 (lower = higher quality)
+    cpu_used: int | str = 6,
+    pix_fmt: str = "yuv444p",
+    grayscale: bool = False,    # NEW
+) -> Tuple[torch.Tensor, int]:
+    """
+    AV1 (libaom-av1) **constant QP**: end-usage=q, qp=<val>.
+    Disable AQ/DeltaQ so global QP has a clear effect on single frames.
+    Set 'monochrome=1' when grayscale=True.
+    """
+    opts = {
+        "end-usage": "q",
+        "qp": str(int(qp)),
+        "cpu-used": str(cpu_used),
+        "row-mt": "1",
+        "aq-mode": "0",
+        "enable-chroma-deltaq": "0",
+        "deltaq-mode": "0",
+    }
+    if grayscale:
+        opts["monochrome"] = "1"
+
+    return _pyav_video_roundtrip(
+        canvases_cpu_f01,
+        encoder="libaom-av1",
+        container="ivf",
+        pix_fmt=pix_fmt,
+        fps=fps,
+        gop=gop,
+        options=opts,
+        force_bitrate0=False,
+        grayscale=grayscale,
+    )
+
+
+def vp9_video_roundtrip(
+    canvases_cpu_f01: torch.Tensor,
+    *,
+    fps: int,
+    gop: int,
+    qp: int,                    # 0..63 (lower = higher quality)
+    cpu_used: int | str = 4,
+    pix_fmt: str = "yuv444p",
+    grayscale: bool = False,
+) -> Tuple[torch.Tensor, int]:
+    """
+    VP9 (libvpx-vp9) constant QP:
+      - end-usage=q
+      - qmin=qmax=qp
+      - crf=<qp>  (keep CQ level consistent with QP to avoid validation errors)
+      - profile=1 required for 4:4:4 (yuv444p)
+      - grayscale: still feed 3-ch YUV, set monochrome=1 (bitstream drops chroma)
+    """
+    opts = {
+        "end-usage": "q",
+        "qmin": str(int(qp)),
+        "qmax": str(int(qp)),
+        "crf":  str(int(qp)),      # <<< IMPORTANT: match CQ level to qp
+        "cpu-used": str(cpu_used),
+        "row-mt": "1",
+    }
+    if str(pix_fmt).startswith("yuv444"):
+        opts["profile"] = "1"
+    if grayscale:
+        opts["monochrome"] = "1"
+        canv_3 = canvases_cpu_f01.repeat(1, 3, 1, 1)  # [T,3,H,W]
+        rec_3, bits = _pyav_video_roundtrip(
+            canv_3,
+            encoder="libvpx-vp9",
+            container="webm",
+            pix_fmt=pix_fmt,
+            fps=fps,
+            gop=gop,
+            options=opts,
+            force_bitrate0=False,
+            grayscale=False,       # feed as color
+        )
+        return rec_3[:, :1, ...], bits
+
+    return _pyav_video_roundtrip(
+        canvases_cpu_f01,
+        encoder="libvpx-vp9",
+        container="webm",
+        pix_fmt=pix_fmt,
+        fps=fps,
+        gop=gop,
+        options=opts,
+        force_bitrate0=False,
+        grayscale=False,
+    )
+
+
+
+# ======================== JPEG HELPERS ========================
 def to_uint8_from_float01(img_f01_hw_or_hw3: np.ndarray) -> np.ndarray:
     """float32 [0,1] → uint8 [0,255] with rounding; accepts HxW (mono) or HxWx3 (BGR)."""
     img = np.clip(img_f01_hw_or_hw3, 0.0, 1.0)

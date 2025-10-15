@@ -1,7 +1,7 @@
 _base_ = '../default.py'
-expname = 'hevc_p4'
+expname = 'av1_qp26'
 ckptname = 'flame_steak_video_ds3'
-wandbprojectname = 'ca_flame_steak_video'
+wandbprojectname = 'ste_flame_steak'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/dynerf_flame_steak'
 
 data = dict(
@@ -28,7 +28,7 @@ fine_model_and_render = dict(
 )
 
 codec = dict(
-    name = 'PyNvVideoCodecWrapper',
+    name = 'AV1VideoCodec',
     ckpt_path = None,
     train_mode='ste',
     unet_pre_base = 32,             # UNet width
@@ -41,15 +41,14 @@ codec = dict(
     packing_mode = "flatten",
     use_amp=True,
     quality=None,
-    codec_refresh_k = 32,
-    refresh_trigger_eps = 0.0,  # e.g., 0.05 to refresh early if planes drift >5% L2
-    crf = 28,
-    gop = 10,
+    codec_refresh_k = 128,
+    refresh_trigger_eps = 0.05,  # e.g., 0.05 to refresh early if planes drift >5% L2
+    gop = 20,
     fps = 30,
-    nv_constqp = 24,  #[0, 51]
-    nv_codec = "hevc",
-    fmt = "YUV444",
-    nv_preset = "P4",
+    pix_fmt = 'yuv444p',
+    hevc_qp = None,
+    vp9_qp = None,
+    av1_qp = 26,
 )
 
 _k = 1

@@ -14,7 +14,7 @@ import wandb
 import math
 
 from src.utils.common import setup_unique_torch_extensions_dir
-from src.models import STE_DVGO_Video
+from src.models.ste_dvgo_video import STE_DVGO_Video
 # setup_unique_torch_extensions_dir()
 
 from TeTriRF.lib.utils import debug_print_param_status
@@ -27,6 +27,7 @@ WANDB=True
 """
 Usage:
     python train_codec_nerf_video.py --config configs/dynerf_flame_steak/dcvc_qp48.py --frame_ids 0 1 2 3 4 5 6 7 8 9
+    python train_codec_nerf_video.py --config configs/dynerf_flame_steak/av1_qp20.py --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 
 """
 
 def build_arg_parser() -> argparse.ArgumentParser:

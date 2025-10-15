@@ -1,7 +1,7 @@
 _base_ = '../default.py'
-expname = 'hevc_crf12'
+expname = 'hevc_qp44'
 ckptname = 'flame_steak_video_ds3'
-wandbprojectname = 'ca_flame_steak_video'
+wandbprojectname = 'ste_flame_steak'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/dynerf_flame_steak'
 
 data = dict(
@@ -42,9 +42,13 @@ codec = dict(
     use_amp=True,
     quality=None,
     codec_refresh_k = 128,
-    refresh_trigger_eps = 0.0,  # e.g., 0.05 to refresh early if planes drift >5% L2
-    crf = 12,
-    gop = 10,
+    refresh_trigger_eps = 0.05,  # e.g., 0.05 to refresh early if planes drift >5% L2
+    gop = 20,
+    fps = 30,
+    pix_fmt = 'yuv444p',
+    hevc_qp = 44,
+    vp9_qp = None,
+    av1_qp = None,
 )
 
 _k = 1

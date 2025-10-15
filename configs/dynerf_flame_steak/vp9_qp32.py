@@ -1,7 +1,7 @@
 _base_ = '../default.py'
-expname = 'hevc_crf44'
+expname = 'vp9_qp32'
 ckptname = 'flame_steak_video_ds3'
-wandbprojectname = 'ca_flame_steak_video'
+wandbprojectname = 'ste_flame_steak'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/dynerf_flame_steak'
 
 data = dict(
@@ -28,7 +28,7 @@ fine_model_and_render = dict(
 )
 
 codec = dict(
-    name = 'HEVCVideoCodec',
+    name = 'VP9VideoCodec',
     ckpt_path = None,
     train_mode='ste',
     unet_pre_base = 32,             # UNet width
@@ -42,9 +42,13 @@ codec = dict(
     use_amp=True,
     quality=None,
     codec_refresh_k = 128,
-    refresh_trigger_eps = 0.0,  # e.g., 0.05 to refresh early if planes drift >5% L2
-    crf = 44,
-    gop = 10,
+    refresh_trigger_eps = 0.05,  # e.g., 0.05 to refresh early if planes drift >5% L2
+    gop = 20,
+    fps = 30,
+    pix_fmt = 'yuv444p',
+    hevc_qp = None,
+    vp9_qp = 32,
+    av1_qp = None,
 )
 
 _k = 1
