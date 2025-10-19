@@ -23,12 +23,12 @@ Usage:
     python train_seq_triplane.py --config configs/NHR/sport1.py --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 --training_mode 1
 """
 
-WANDB = True
+WANDB = False
 
 # ------------------------------------------------------------------------------
 # 2. Argument & config handling
 # ------------------------------------------------------------------------------
-def build_arg_parser() -> argparse.ArgumentParser:
+def build_arg_parser():
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     p.add_argument('--config', required=True)
     p.add_argument('--frame_ids', nargs='+', type=int, help='List of frame IDs')
@@ -150,8 +150,15 @@ class Trainer:
         for fid in uniq_ids:
             if fid in model.fixed_frame:
                 continue
-            mask     = (frame_ids_all == fid)[data['i_train']]
-            t_train  = np.array(data['i_train'])[mask]
+            # mask     = (frame_ids_all == fid)[data['i_train']]
+            # t_train  = np.array(data['i_train'])[mask]
+
+            i_train_t = torch.as_tensor(self.data['i_train'], dtype=torch.long, device=frame_ids_all.device)
+            sel       = (frame_ids_all[i_train_t] == fid)                      # torch.bool, length == len(i_train)
+            t_train   = i_train_t[sel].cpu().numpy()                       # numpy indices for downstream code
+
+
+
             rgb_ori  = data['images'][t_train].to('cpu' if cfg.data.load2gpu_on_the_fly else device)
 
             pmasks = None
@@ -159,6 +166,7 @@ class Trainer:
                 pmasks = torch.from_numpy(tmasks[t_train]).to('cpu' if cfg.data.load2gpu_on_the_fly else device)
 
             # e.g., ro is a list, ro[1] has a shape of [N_rays=609076, 3] 
+            print("uniq frame_ids in i_train:", torch.unique(frame_ids_all[t_train]))
             rgb, ro, rd, vd, imsz, fids = dvgo.get_training_rays_multi_frame(
                 rgb_tr_ori=rgb_ori,
                 train_poses=poses[t_train],

@@ -22,17 +22,16 @@ def load_data(args, split="train"):
             args.spherify = False
 
         dataset = LLFF_Dataset(args.datadir, factor = args.factor, frameids = args.frame_ids, test_views = args.test_frames, spherify = args.spherify)
+        
         def my_collate_fn(batch):
-            # Separate the data and labels from each sample in the batch
             assert len(batch) ==1
             item = batch[0]
             data1 = item[0] 
             data2 = item[1] 
             data3 = item[2] 
             data4 = item[3] 
-
-            # Return the collated data and labels as a single batch
             return data1, data2, data3, data4
+        
         train_dataloader = DataLoader(dataset, batch_size=1,num_workers = 12, shuffle=False, collate_fn = my_collate_fn)
 
         frame_ids = []
@@ -46,7 +45,7 @@ def load_data(args, split="train"):
             res_images.append(images_t)
             res_poses.append(poses_t)
             res_render_poses.append(render_poses_t)
-            frame_ids.append(torch.ones(P, device='cpu')*args.frame_ids[i])
+            frame_ids.append(torch.ones(P, device='cpu')*args.frame_ids[i])  # every block of P consecutive views has the same fid
 
         res_images = np.concatenate(res_images,axis=0)
         res_poses = np.concatenate(res_poses,axis=0)
@@ -259,97 +258,41 @@ def load_data(args, split="train"):
         args.frame_ids.sort()
         frame_id = args.frame_ids[-1]
         previous_frame_ids = args.frame_ids[:-1]
-        tar_size = (args.height,args.width)
-        tar_size = (480, 640)
-        isNHR = True
-        if args.width>960:
-            isNHR = False
-        dataset = NHR_Dataset(args.datadir, frameids = args.frame_ids,test_views = args.test_frames, tar_size=tar_size, isNHR = isNHR)
-        def my_collate_fn(batch):
-            # Separate the data and labels from each sample in the batch
-            assert len(batch) ==1
-            item = batch[0]
-            data1 = item[0] 
-            data2 = item[1] 
-            data3 = item[2] 
-            data4 = item[3] 
+        tar_size = (args.height, args.width)
+        isNHR = (args.width <= 960)
 
-            
-            # Return the collated data and labels as a single batch
-            return data1, data2, data3, data4
-        # train_dataloader = DataLoader(dataset, batch_size=1,num_workers = 12, shuffle=False, collate_fn = my_collate_fn)
-        train_dataloader = DataLoader(dataset, batch_size=1,num_workers = 4, shuffle=False, collate_fn = my_collate_fn)
+        dataset = NHR_Dataset(
+            args.datadir,
+            frameids=args.frame_ids,
+            test_views=args.test_frames,
+            tar_size=tar_size,
+            isNHR=isNHR
+        )
 
-        frame_ids = []
-        res_images = []
-        res_images_ori = []
-        res_poses = []
-        res_intrinsic = []
-   
-        for i, data in enumerate(train_dataloader):
-            images_t, poses_t, intrinsic_t, images_ori_t = data
-            P = images_t.size(0)
-            res_images.append(images_t)
-            res_images_ori.append(images_ori_t)
-            res_poses.append(poses_t)
-            res_intrinsic.append(intrinsic_t)
-            frame_ids.append(torch.ones(P, device='cpu')*args.frame_ids[i])
-
-        res_images = torch.cat(res_images,dim=0).numpy()
-        res_images_ori = torch.cat(res_images_ori,dim=0).numpy()
-        res_poses = np.concatenate(res_poses,axis=0)
-        res_intrinsic = np.concatenate(res_intrinsic,axis=0)
-        frame_ids = torch.cat(frame_ids).long()
-
-        N=P
-
-        #copy the list self.test_views to tmp
-        tmp = []
-        for i in dataset.test_views:
-            for j in range(i,len(res_poses),N):
-                tmp.append(j)
-        dataset.test_views = tmp
-
-        
-
-
-        if len(dataset.test_views)==0:
-            i_split = [np.arange(0, len(res_poses)) for i in range(3)]
-        else:
-            i_split = [[i for i in np.arange(0, len(res_poses)) if i not in dataset.test_views]]
-            i_split.append(dataset.test_views)
-            i_split.append(dataset.test_views)
-
-
-        i_split.append(np.arange(0, P*len(previous_frame_ids)))  # replay data
-        i_split.append(np.arange(P*len(previous_frame_ids), P*len(previous_frame_ids)+N))  # current data
-
-        #i_split[0] =  i_split[0][::scale]
-
-        images, poses, render_poses, hwf, K, i_split, frame_ids = res_images, res_poses, res_poses, [res_images.shape[1], res_images.shape[2], intrinsic_t[0,0,0]], res_intrinsic, i_split,frame_ids
-
-        #images, poses, render_poses, hwf, K, i_split, frame_ids = dataset.load_data(frame_id, previous_frame_ids)
-        print('Loaded NHR', images.shape, render_poses.shape, hwf, args.datadir, ' frame:', frame_id, ' previous:',previous_frame_ids)
+        # >>> Use the dataset's own loader (already patched to be frame-safe) <<<
+        images, poses, render_poses, hwf, K, i_split, frame_ids = dataset.load_data(
+            current_id=frame_id, previous_ids=previous_frame_ids, scale=1.0
+        )
+        print('Loaded NHR', images.shape, render_poses.shape, hwf, args.datadir,
+            ' frame:', frame_id, ' previous:', previous_frame_ids)
 
         i_train, i_val, i_test, i_replay, i_current = i_split
-
         print('@@@@@@ training:', len(i_train), 'test:', len(i_test))
 
+        # Near/far from current-frame camera centers
         near, far = inward_nearfar_heuristic(poses[i_current, :3, 3])
+        near = near * 1.1
+        far  = far  * 1.6
 
-        near = near*1.1
-
-        far = far*1.6
-
-        assert images.shape[-1] == 4 or  images.shape[-1] == 3
-
-        masks = images[...,-1:]
-
+        # masks & alpha handling (same as before)
+        assert images.shape[-1] in (3, 4)
+        masks = images[..., -1:]
         if images.shape[-1] == 4:
             if args.white_bkgd:
-                images = images[...,:3]*masks + (1.-masks)
+                images = images[..., :3] * masks + (1. - masks)
             else:
-                images = images[...,:3]
+                images = images[..., :3]
+
     else:
         raise NotImplementedError(f'Unknown dataset type {args.dataset_type} exiting')
 

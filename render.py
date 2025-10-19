@@ -37,7 +37,10 @@ Usage:
     python render.py --config  configs/blender_lego/image.py  \
         --render_test --frame_ids 0 \
         --ckpt_dir logs/nerf_synthetic/dcvc_qp24_flatten_flatten/dcvc_qp24
-        """
+    python render.py --render_test --frame_ids 0 5 10 15 19 \
+        --config configs/dynerf_flame_steak/av1_qp20.py  \
+        --ckpt_dir logs/dynerf_flame_steak/av1_qp20/compressed_av1_qp20_g20_yuv444p
+"""
 
 def config_parser():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)

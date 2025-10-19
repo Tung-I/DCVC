@@ -8,27 +8,48 @@ import matplotlib.pyplot as plt
 # ==============================
 # Your sets (explicit mapping)
 # ==============================
+set_vp9: Dict[str, str] = {
+    'qp28': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_vp9_qp28_g20_yuv444p',
+    'qp32': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_vp9_qp32_g20_yuv444p',
+    'qp36': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_vp9_qp36_g20_yuv444p',
+    'qp40': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_vp9_qp40_g20_yuv444p',
+    'qp44': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_vp9_qp44_g20_yuv444p',
+}
 set_hevc: Dict[str, str] = {
-    'crf44': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_crf44_g10_yuv444p',
-    'crf28': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_crf28_g10_yuv444p',
-    'crf12': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_crf12_g10_yuv444p',
+    'qp28': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_qp28_g20_yuv444p',
+    'qp32': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_qp32_g20_yuv444p',
+    'qp36': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_qp36_g20_yuv444p',
+    'qp40': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_qp40_g20_yuv444p',
+    'qp44': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_qp44_g20_yuv444p',
 }
 set_av1: Dict[str, str] = {
-    'crf44': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_crf44_g10_yuv444p',
-    'crf28': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_crf28_g10_yuv444p',
-    'crf12': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_crf12_g10_yuv444p',
+    'qp44': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp44_g20_yuv444p',
+    'qp38': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp38_g20_yuv444p',
+    'qp32': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp32_g20_yuv444p',
+    'qp26': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp26_g20_yuv444p',
+    'qp20': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp20_g20_yuv444p',
 }
-set_hevc_adap: Dict[str, str] = {
-    'crf44': 'logs/dynerf_flame_steak/hevc_crf44/compressed_hevc_crf44_g10_yuv444p',
-    'crf28': 'logs/dynerf_flame_steak/hevc_crf28/compressed_hevc_crf28_g10_yuv444p',
-    'crf12': 'logs/dynerf_flame_steak/hevc_crf12/compressed_hevc_crf12_g10_yuv444p',
+set_vp9_ours: Dict[str, str] = {
+    'qp28': 'logs/dynerf_flame_steak/vp9_qp28/compressed_vp9_qp28_g20_yuv444p',
+    'qp32': 'logs/dynerf_flame_steak/vp9_qp32/compressed_vp9_qp32_g20_yuv444p',
+    'qp36': 'logs/dynerf_flame_steak/vp9_qp36/compressed_vp9_qp36_g20_yuv444p',
+    'qp40': 'logs/dynerf_flame_steak/vp9_qp40/compressed_vp9_qp40_g20_yuv444p',
+    'qp44': 'logs/dynerf_flame_steak/vp9_qp44/compressed_vp9_qp44_g20_yuv444p',
 }
-set_av1_adap: Dict[str, str] = {
-    'crf44': 'logs/dynerf_flame_steak/av1_crf44/compressed_av1_crf44_g10_yuv444p',
-    'crf28': 'logs/dynerf_flame_steak/av1_crf28/compressed_av1_crf28_g10_yuv444p',
-    'crf12': 'logs/dynerf_flame_steak/av1_crf12/compressed_av1_crf12_g10_yuv444p',
+set_hevc_ours: Dict[str, str] = {
+    'qp28': 'logs/dynerf_flame_steak/hevc_qp28/compressed_hevc_qp28_g20_yuv444p',
+    'qp32': 'logs/dynerf_flame_steak/hevc_qp32/compressed_hevc_qp32_g20_yuv444p',
+    'qp36': 'logs/dynerf_flame_steak/hevc_qp36/compressed_hevc_qp36_g20_yuv444p',
+    'qp40': 'logs/dynerf_flame_steak/hevc_qp40/compressed_hevc_qp40_g20_yuv444p',
+    'qp44': 'logs/dynerf_flame_steak/hevc_qp44/compressed_hevc_qp44_g20_yuv444p',
 }
-
+set_av1_ours: Dict[str, str] = {
+    'qp44': 'logs/dynerf_flame_steak/av1_qp44/compressed_av1_qp44_g20_yuv444p',
+    'qp38': 'logs/dynerf_flame_steak/av1_qp38/compressed_av1_qp38_g20_yuv444p',
+    'qp32': 'logs/dynerf_flame_steak/av1_qp32/compressed_av1_qp32_g20_yuv444p',
+    'qp26': 'logs/dynerf_flame_steak/av1_qp26/compressed_av1_qp26_g20_yuv444p',
+    'qp20': 'logs/dynerf_flame_steak/av1_qp20/compressed_av1_qp20_g20_yuv444p',
+}
 
 # ==============================
 # Generic readers
@@ -46,12 +67,7 @@ def save_csv(path: str, rows: List[Tuple]):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", newline="") as f:
         w = csv.writer(f)
-        if rows and len(rows[0]) == 4:
-            w.writerow(["bitrate_Mbit", "psnr_dB", "level", "label_or_folder"])
-        elif rows and len(rows[0]) == 3:
-            w.writerow(["bitrate_Mbit", "psnr_dB", "level"])
-        else:
-            w.writerow(["bitrate_Mbit", "psnr_dB"])
+        w.writerow(["bitrate_Mbit", "psnr_dB", "ssim", "lpips", "qp", "label_or_folder"])
         for r in rows:
             w.writerow(r)
 
@@ -88,23 +104,24 @@ def read_total_bits_from_encoded_bits_txt(folder: str, rel_path: str = "encoded_
         if total_bits is not None:
             return total_bits
         if found_any:
-            # If file lacks explicit TOTAL line, fall back to sum of entries
             return sum_fallback
     except Exception:
         return None
     return None
 
-# ---- PSNR: average over render_test/{i}_psnr.txt ----
-def read_avg_psnr_from_render_dir(folder: str, rel_dir: str = "render_test") -> Optional[float]:
+# ---- Metrics: average over render_test/{*}_{metric}.txt ----
+def read_avg_metric_from_render_dir(folder: str, metric: str, rel_dir: str = "render_test") -> Optional[float]:
     """
-    Finds all files matching render_test/*_psnr.txt and averages their float values.
-    Falls back to render_test/0_psnr.txt if pattern yields nothing.
+    metric in {"psnr","ssim","lpips"}
+    Looks for all files matching *_{metric}.txt and averages them.
+    Falls back to {metric}.txt named as '0_metric.txt' if pattern yields nothing.
     """
+    assert metric in ("psnr", "ssim", "lpips")
     rdir = os.path.join(folder, rel_dir)
     if not os.path.isdir(rdir):
         return None
 
-    paths = sorted(glob.glob(os.path.join(rdir, "*_psnr.txt")))
+    paths = sorted(glob.glob(os.path.join(rdir, f"*_{metric}.txt")))
     vals: List[float] = []
     if paths:
         for p in paths:
@@ -115,16 +132,12 @@ def read_avg_psnr_from_render_dir(folder: str, rel_dir: str = "render_test") -> 
             return float(np.mean(vals))
         return None
 
-    # Fallback to a single-file convention
-    single = os.path.join(rdir, "0_psnr.txt")
-    v = read_float(single)
-    return v
+    # fallback single-file convention
+    single = os.path.join(rdir, f"0_{metric}.txt")
+    return read_float(single)
 
-def _parse_level(text: str, rx: Optional[str]) -> Optional[int]:
-    """
-    Parse a numeric level from label (e.g., 'crf28' -> 28).
-    Use rx like r'.*?crf(\d+)' or r'.*?qp(\d+)'.
-    """
+def _parse_qp(text: str, rx: Optional[str]) -> Optional[int]:
+    """Parse a QP from label (e.g., 'qp28' -> 28)."""
     if not rx:
         return None
     m = re.match(rx, text) if rx.startswith("^") else re.search(rx, text)
@@ -135,43 +148,59 @@ def _parse_level(text: str, rx: Optional[str]) -> Optional[int]:
 # ==============================
 CURVES: List[Dict[str, Any]] = [
     {
-        "name": "HEVC",
+        "name": "TeTriRF-VP9",
         "enabled": True,
         "kind": "mapping",
-        "paths": set_hevc,  # label -> folder
-        "level_regex": r".*?crf(\d+)",  # pull CRF from label (e.g., 'crf28')
+        "paths": set_vp9,  # label -> folder
+        "level_regex": r".*?qp(\d+)",          # QP, not CRF
         "bits": {"type": "encoded_bits_total", "path": "encoded_bits.txt"},
-        "psnr": {"type": "avg_render_dir", "dir": "render_test"},
+        "metrics": {"dir": "render_test"},     # read psnr/ssim/lpips from here
     },
     {
-        "name": "AV1",
+        "name": "TeTriRF-HEVC",
         "enabled": True,
         "kind": "mapping",
-        "paths": set_av1,  # label -> folder
-        "level_regex": r".*?crf(\d+)",
+        "paths": set_hevc,
+        "level_regex": r".*?qp(\d+)",
         "bits": {"type": "encoded_bits_total", "path": "encoded_bits.txt"},
-        "psnr": {"type": "avg_render_dir", "dir": "render_test"},
+        "metrics": {"dir": "render_test"},
     },
     {
-        "name": "HEVC (codec-adapted)",
+        "name": "TeTriRF-AV1",
         "enabled": True,
         "kind": "mapping",
-        "paths": set_hevc_adap,  # label -> folder
-        "level_regex": r".*?crf(\d+)",
+        "paths": set_av1,
+        "level_regex": r".*?qp(\d+)",
         "bits": {"type": "encoded_bits_total", "path": "encoded_bits.txt"},
-        "psnr": {"type": "avg_render_dir", "dir": "render_test"},
+        "metrics": {"dir": "render_test"},
     },
     {
-        "name": "AV1 (codec-adapted)",
+        "name": "Ours-VP9",
         "enabled": True,
         "kind": "mapping",
-        "paths": set_av1_adap,  # label -> folder
-        "level_regex": r".*?crf(\d+)",
+        "paths": set_vp9_ours,
+        "level_regex": r".*?qp(\d+)",
         "bits": {"type": "encoded_bits_total", "path": "encoded_bits.txt"},
-        "psnr": {"type": "avg_render_dir", "dir": "render_test"},
+        "metrics": {"dir": "render_test"},
+    },
+    {
+        "name": "Ours-HEVC",
+        "enabled": True,
+        "kind": "mapping",
+        "paths": set_hevc_ours,
+        "level_regex": r".*?qp(\d+)",
+        "bits": {"type": "encoded_bits_total", "path": "encoded_bits.txt"},
+        "metrics": {"dir": "render_test"},
+    },
+    {
+        "name": "Ours-AV1",
+        "enabled": True,
+        "kind": "mapping",
+        "paths": set_av1_ours,
+        "level_regex": r".*?qp(\d+)",
+        "bits": {"type": "encoded_bits_total", "path": "encoded_bits.txt"},
+        "metrics": {"dir": "render_test"},
     }
-    # If you later want to enable a folder scan, add a spec with kind="folder_scan"
-    # and a "folder_regex" to match folder names, similar to the old script.
 ]
 
 # ==============================
@@ -182,7 +211,6 @@ def _read_bits(bits_spec: Dict[str, Any], folder: str) -> Optional[float]:
     if btype == "encoded_bits_total":
         return read_total_bits_from_encoded_bits_txt(folder, bits_spec.get("path", "encoded_bits.txt"))
     elif btype == "dcvc_json":
-        # Kept for completeness; unused in your current HEVC/AV1 flow
         pat = bits_spec.get("pattern", "compress_stats_f*_q*.json")
         cand = sorted(glob.glob(os.path.join(folder, pat)))
         if not cand:
@@ -202,98 +230,109 @@ def _read_bits(bits_spec: Dict[str, Any], folder: str) -> Optional[float]:
     else:
         raise ValueError(f"Unknown bits.type: {btype}")
 
-def _read_psnr(psnr_spec: Dict[str, Any], folder: str) -> Optional[float]:
-    ptype = psnr_spec.get("type")
-    if ptype == "avg_render_dir":
-        return read_avg_psnr_from_render_dir(folder, psnr_spec.get("dir", "render_test"))
-    elif ptype == "file":
-        # legacy single-file path
-        return read_float(os.path.join(folder, psnr_spec.get("path", "render_test/0_psnr.txt")))
-    else:
-        raise ValueError(f"Unknown psnr.type: {ptype}")
-
-def collect_folder_scan(curve: Dict[str, Any], root_dir: str) -> List[Tuple[float, float, Optional[int], str]]:
-    folder_rx = re.compile(curve["folder_regex"])
-    lvl_rx = curve.get("level_regex")  # optional
-    points = []
-    if not os.path.isdir(root_dir):
-        print(f"[warn] folder_scan root does not exist: {root_dir}")
-        return points
-
-    for name in sorted(os.listdir(root_dir)):
-        m = folder_rx.match(name)
-        if not m:
-            continue
-        level = int(m.group(1)) if m.groups() else _parse_level(name, lvl_rx)
-        folder = os.path.join(root_dir, name)
-
-        bits = _read_bits(curve["bits"], folder)
-        psnr = _read_psnr(curve["psnr"], folder)
-        if bits is None or psnr is None:
-            print(f"[warn] skip {name}: bits={bits} psnr={psnr} (folder={folder})")
-            continue
-
-        # Per your assumption T=FPS, segment duration=1s ⇒ Mbps = total_bits / 1e6
-        bitrate_mbit = bits / 1e6
-        points.append((bitrate_mbit, psnr, level, name))
-
-    # Order by level (CRF/QP) then bitrate
-    points.sort(key=lambda p: (p[2] if p[2] is not None else 10**9, p[0]))
-    return points
-
-def collect_mapping(curve: Dict[str, Any]) -> List[Tuple[float, float, Optional[int], str]]:
+def collect_mapping(curve: Dict[str, Any]) -> List[Dict[str, Any]]:
     paths: Dict[str, str] = curve["paths"]
     lvl_rx = curve.get("level_regex")
-    points = []
+    out: List[Dict[str, Any]] = []
     for label, folder in paths.items():
         bits = _read_bits(curve["bits"], folder)
-        psnr = _read_psnr(curve["psnr"], folder)
-        if bits is None or psnr is None:
-            print(f"[warn] skip {label}: bits={bits} psnr={psnr} (folder={folder})")
+        if bits is None:
+            print(f"[warn] skip {label}: bits=None (folder={folder})")
             continue
-        level = _parse_level(label, lvl_rx)
+        psnr = read_avg_metric_from_render_dir(folder, "psnr", curve["metrics"].get("dir", "render_test"))
+        ssim = read_avg_metric_from_render_dir(folder, "ssim", curve["metrics"].get("dir", "render_test"))
+        lpips = read_avg_metric_from_render_dir(folder, "lpips", curve["metrics"].get("dir", "render_test"))
+        if psnr is None and ssim is None and lpips is None:
+            print(f"[warn] skip {label}: no metrics found (folder={folder})")
+            continue
+        qp = _parse_qp(label, lvl_rx)
         bitrate_mbit = bits / 1e6
-        points.append((bitrate_mbit, psnr, level, label))
-
-    points.sort(key=lambda p: (p[2] if p[2] is not None else 10**9, p[0]))
-    return points
+        out.append(dict(
+            bitrate=bitrate_mbit, psnr=psnr, ssim=ssim, lpips=lpips, qp=qp, label=label, folder=folder
+        ))
+    # sort by (QP asc, bitrate asc)
+    out.sort(key=lambda d: ((d["qp"] if d["qp"] is not None else 10**9), d["bitrate"]))
+    return out
 
 # ==============================
-# CLI / Plot
+# Styles (color by codec, marker by method)
 # ==============================
+def parse_range(arg: Optional[str]) -> Optional[Tuple[float, float]]:
+    if not arg:
+        return None
+    try:
+        a, b = [float(x.strip()) for x in arg.split(",")]
+        return (a, b)
+    except Exception:
+        return None
+
 def parse_args():
     ap = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    # If you add a folder_scan curve, wire its root via CLI like this:
-    ap.add_argument("--root_jpeg", help="(unused unless a folder_scan spec references it)")
-    ap.add_argument("--annotate", action="store_true", help="Annotate points with CRF/labels")
-    ap.add_argument("--root_dir", default="plots")
-    ap.add_argument("--title", default="TriPlane video (10 FPS, 10 frames per segment)", help="Plot title")
+    ap.add_argument("--annotate", action="store_true", help="Annotate points with QP/labels")
+    ap.add_argument("--root_dir", default="plots", help="Where to save outputs")
+    ap.add_argument("--title", default="TriPlane video RD curves", help="Super title for the figure")
+
+    # Colors (per codec)
+    ap.add_argument("--color_vp9",  default="#1f77b4", help="Color for VP9 curves")
+    ap.add_argument("--color_hevc", default="#2ca02c", help="Color for HEVC curves")
+    ap.add_argument("--color_av1",  default="#d62728", help="Color for AV1 curves")
+
+    # Markers (per method)
+    ap.add_argument("--marker_ours",     default="*", help="Marker for 'Ours-*' curves")
+    ap.add_argument("--marker_tetrirf",  default="o", help="Marker for 'TeTriRF-*' curves")
+
+    # Axis ranges (per subplot)
+    ap.add_argument("--xlim_psnr",  default="0,16", help="xmin,xmax for PSNR subplot")
+    ap.add_argument("--ylim_psnr",  default="22,33", help="ymin,ymax for PSNR subplot")
+    ap.add_argument("--xlim_ssim",  default="0,16", help="xmin,xmax for SSIM subplot")
+    ap.add_argument("--ylim_ssim",  default="0.7,0.95", help="ymin,ymax for SSIM subplot")
+    ap.add_argument("--xlim_lpips", default="0,16", help="xmin,xmax for LPIPS subplot")
+    ap.add_argument("--ylim_lpips", default="0.2,0.6", help="ymin,ymax for LPIPS subplot")
     return ap.parse_args()
 
+def method_and_codec_from_name(curve_name: str) -> Tuple[str, str]:
+    # e.g., "Ours-AV1" -> ("Ours", "AV1"), "TeTriRF-VP9" -> ("TeTriRF", "VP9")
+    if "-" in curve_name:
+        m, c = curve_name.split("-", 1)
+        return m.strip(), c.strip().upper()
+    return curve_name.strip(), curve_name.strip().upper()
+
+def color_for_codec(codec: str, args) -> str:
+    codec = codec.upper()
+    if codec == "VP9":
+        return args.color_vp9
+    if codec == "HEVC":
+        return args.color_hevc
+    if codec == "AV1":
+        return args.color_av1
+    return "#000000"
+
+def marker_for_method(method: str, args) -> str:
+    m = method.lower()
+    if m.startswith("ours"):
+        return args.marker_ours
+    if m.startswith("tetrirf"):
+        return args.marker_tetrirf
+    # fallback
+    return "o"
+
+# ==============================
+# Main
+# ==============================
 def main():
     args = parse_args()
-    # Collect points per curve
-    curve_points: List[Tuple[str, List[Tuple[float, float, Optional[int], str]]]] = []
 
+    # Collect points per curve
+    curve_points: List[Tuple[str, List[Dict[str, Any]]]] = []
     for spec in CURVES:
         if not spec.get("enabled", True):
             continue
         name = spec["name"]
         kind = spec["kind"]
-
-        if kind == "folder_scan":
-            root_key = spec.get("root_from_cli", "root_jpeg")
-            root_dir = getattr(args, root_key, None)
-            if not root_dir:
-                print(f"[warn] skip curve '{name}': missing CLI root '{root_key}'")
-                continue
-            pts = collect_folder_scan(spec, root_dir)
-        elif kind == "mapping":
-            pts = collect_mapping(spec)
-        else:
-            print(f"[warn] unknown curve kind '{kind}' for '{name}', skipping")
+        if kind != "mapping":
+            print(f"[warn] unknown/unsupported curve kind '{kind}' for '{name}', skipping")
             continue
-
+        pts = collect_mapping(spec)
         if pts:
             curve_points.append((name, pts))
         else:
@@ -304,54 +343,117 @@ def main():
 
     # Resolve output
     out_path = os.path.join(args.root_dir, "rd_curve.png")
-    csv_dir = args.root_dir
     os.makedirs(args.root_dir, exist_ok=True)
 
-    # ---- Plot ----
-    plt.figure(figsize=(7.5, 5.0))
-    markers = ["o", "s", "^", "v", "D", "P", "X", "*", "<", ">"]
+    # ---- Plot: 3 subplots (PSNR / SSIM / LPIPS) ----
+    fig, axes = plt.subplots(1, 3, figsize=(13.0, 4.2), squeeze=True)
+    ax_psnr, ax_ssim, ax_lpips = axes
 
-    for idx, (curve_name, pts) in enumerate(curve_points):
-        x = np.array([p[0] for p in pts], dtype=float)  # Mbps
-        y = np.array([p[1] for p in pts], dtype=float)  # dB
-        marker = markers[idx % len(markers)]
-        plt.plot(x, y, marker=marker, linestyle="-", label=curve_name)
+    # Keep one legend for all axes: collect handles on the PSNR axis
+    legend_handles = []
+    legend_labels  = []
 
-    plt.xlabel("Bitrate (Mbit/s)", fontsize=14)
-    plt.ylabel("PSNR (dB)", fontsize=14)
-    plt.title(args.title)
-    plt.grid(True, linestyle="--", linewidth=0.6, alpha=0.65)
-    plt.legend()
+    for curve_name, pts in curve_points:
+        method, codec = method_and_codec_from_name(curve_name)
+        color  = color_for_codec(codec, args)
+        marker = marker_for_method(method, args)
 
-    if args.annotate:
-        for curve_name, pts in curve_points:
-            for (xi, yi, level, label) in pts:
-                tag = (f"CRF{level}" if level is not None else label)
-                plt.annotate(tag, (xi, yi), textcoords="offset points", xytext=(5, 5), fontsize=10)
+        # Sort by QP (asc) for drawing lines in a sensible direction
+        pts_sorted = sorted(pts, key=lambda d: (d["qp"] if d["qp"] is not None else 10**9, d["bitrate"]))
 
-    plt.tight_layout()
+        # Prepare arrays for each metric (filter out None)
+        # Bitrate in Mbps
+        br_psnr  = [d["bitrate"] for d in pts_sorted if d["psnr"]  is not None]
+        y_psnr   = [d["psnr"]    for d in pts_sorted if d["psnr"]  is not None]
+        br_ssim  = [d["bitrate"] for d in pts_sorted if d["ssim"]  is not None]
+        y_ssim   = [d["ssim"]    for d in pts_sorted if d["ssim"]  is not None]
+        br_lpips = [d["bitrate"] for d in pts_sorted if d["lpips"] is not None]
+        y_lpips  = [d["lpips"]   for d in pts_sorted if d["lpips"] is not None]
+
+        # Labels: just the curve name (Method-Codec)
+        lbl = curve_name
+
+        # Draw lines/markers
+        h1, = ax_psnr.plot(br_psnr,  y_psnr,  marker=marker, linestyle="-", color=color, label=lbl)
+        ax_ssim.plot(br_ssim,  y_ssim,  marker=marker, linestyle="-", color=color, label=lbl)
+        ax_lpips.plot(br_lpips, y_lpips, marker=marker, linestyle="-", color=color, label=lbl)
+
+        # Remember one handle per curve for a single legend (avoid duplicates)
+        legend_handles.append(h1)
+        legend_labels.append(lbl)
+
+        # Optional per-point annotation (QP) on PSNR subplot (to avoid clutter)
+        if args.annotate:
+            for d in pts_sorted:
+                if d["psnr"] is None:
+                    continue
+                tag = f"QP{d['qp']}" if d['qp'] is not None else d['label']
+                ax_psnr.annotate(tag, (d["bitrate"], d["psnr"]),
+                                 textcoords="offset points", xytext=(5, 5), fontsize=9)
+
+    # Axis labels & titles
+    for ax in axes:
+        ax.set_xlabel("Bitrate (Mbit/s)", fontsize=12)
+        ax.grid(True, linestyle="--", linewidth=0.6, alpha=0.65)
+
+    ax_psnr.set_ylabel("PSNR (dB)", fontsize=12)
+    ax_ssim.set_ylabel("SSIM", fontsize=12)
+    ax_lpips.set_ylabel("LPIPS", fontsize=12)
+
+    # ax_psnr.set_title("PSNR", fontsize=12)
+    # ax_ssim.set_title("SSIM", fontsize=12)
+    # ax_lpips.set_title("LPIPS", fontsize=12)
+
+    # Axis ranges (optional, per subplot)
+    lims = {
+        "x_psnr": parse_range(args.xlim_psnr),
+        "y_psnr": parse_range(args.ylim_psnr),
+        "x_ssim": parse_range(args.xlim_ssim),
+        "y_ssim": parse_range(args.ylim_ssim),
+        "x_lpips": parse_range(args.xlim_lpips),
+        "y_lpips": parse_range(args.ylim_lpips),
+    }
+    if lims["x_psnr"]:  ax_psnr.set_xlim(*lims["x_psnr"])
+    if lims["y_psnr"]:  ax_psnr.set_ylim(*lims["y_psnr"])
+    if lims["x_ssim"]:  ax_ssim.set_xlim(*lims["x_ssim"])
+    if lims["y_ssim"]:  ax_ssim.set_ylim(*lims["y_ssim"])
+    if lims["x_lpips"]: ax_lpips.set_xlim(*lims["x_lpips"])
+    if lims["y_lpips"]: ax_lpips.set_ylim(*lims["y_lpips"])
+
+    # Single legend across subplots (top)
+    ncol = min(len(legend_labels), 6)
+    fig.legend(legend_handles, legend_labels, loc="upper center", ncol=ncol, frameon=False, bbox_to_anchor=(0.5, 0.98))
+
+    # Super title + layout
+    # fig.suptitle(args.title, y=0.92, fontsize=14)
+    plt.tight_layout(rect=[0, 0, 1, 0.88])  # leave space for suptitle + legend
+
+    # Save
     plt.savefig(out_path, dpi=220)
     plt.close()
+    print(f"[DONE] Saved RD plot: {out_path}")
 
     # ---- CSV outputs (one per curve) ----
     for curve_name, pts in curve_points:
         safe = re.sub(r"[^a-zA-Z0-9]+", "_", curve_name.strip().lower())
-        csv_path = os.path.join(csv_dir, f"rd_points_{safe}.csv")
-        rows = [(p[0], p[1], (p[2] if p[2] is not None else ""), p[3]) for p in pts]
+        csv_path = os.path.join(args.root_dir, f"rd_points_{safe}.csv")
+        rows = [(d["bitrate"], d["psnr"] if d["psnr"] is not None else "",
+                 d["ssim"] if d["ssim"] is not None else "",
+                 d["lpips"] if d["lpips"] is not None else "",
+                 d["qp"] if d["qp"] is not None else "",
+                 d["label"]) for d in pts]
         save_csv(csv_path, rows)
-
-    print(f"[DONE] Saved RD plot: {out_path}")
-    for curve_name, pts in curve_points:
-        safe = re.sub(r"[^a-zA-Z0-9]+", "_", curve_name.strip().lower())
-        csv_path = os.path.join(csv_dir, f"rd_points_{safe}.csv")
         print(f"[DONE] Saved CSV ({curve_name}): {csv_path}")
 
-    # Pretty print
+    # Pretty print (ordered by QP asc)
     for curve_name, pts in curve_points:
-        print(f"\n{curve_name} (ordered by level asc):")
-        for (br, psnr, level, label) in pts:
-            tag = f"CRF{level}" if level is not None else label
-            print(f"  {tag:>10s}  bitrate={br:.3f} Mbit/s  PSNR={psnr:.3f} dB")
+        print(f"\n{curve_name} (ordered by QP asc):")
+        for d in pts:
+            tag = f"QP{d['qp']}" if d['qp'] is not None else d['label']
+            print(f"  {tag:>8s}  bitrate={d['bitrate']:.3f} Mbit/s"
+                  f"{'  PSNR=' + f'{d['psnr']:.3f} dB' if d['psnr'] is not None else ''}"
+                  f"{'  SSIM=' + f'{d['ssim']:.4f}'  if d['ssim'] is not None else ''}"
+                  f"{'  LPIPS=' + f'{d['lpips']:.4f}' if d['lpips'] is not None else ''}")
 
 if __name__ == "__main__":
     main()

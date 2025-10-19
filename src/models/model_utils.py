@@ -151,24 +151,43 @@ def av1_video_roundtrip(
     qp: int,                    # 0..63 (lower = higher quality)
     cpu_used: int | str = 6,
     pix_fmt: str = "yuv444p",
-    grayscale: bool = False,    # NEW
+    grayscale: bool = False,
 ) -> Tuple[torch.Tensor, int]:
     """
-    AV1 (libaom-av1) **constant QP**: end-usage=q, qp=<val>.
-    Disable AQ/DeltaQ so global QP has a clear effect on single frames.
-    Set 'monochrome=1' when grayscale=True.
+    AV1 (libaom-av1), constrained-quality (CQ) mode:
+      - end-usage=cq
+      - crf=cq-level=qp   (0..63, lower=higher quality)
+      - bit_rate=0 to honor CRF
+      - profile=1 for 4:4:4
+      - for grayscale, feed 3ch YUV + monochrome=1
     """
+    crf = int(max(0, min(63, int(qp))))
     opts = {
-        "end-usage": "q",
-        "qp": str(int(qp)),
+        "end-usage": "cq",
+        "crf": str(crf),
+        "cq-level": str(crf),        # belt-and-suspenders: some builds read this
         "cpu-used": str(cpu_used),
         "row-mt": "1",
-        "aq-mode": "0",
-        "enable-chroma-deltaq": "0",
-        "deltaq-mode": "0",
+        # leave AQ/DeltaQ at defaults; CRF will still take effect
     }
+    if str(pix_fmt).startswith("yuv444"):
+        opts["profile"] = "1"
+
     if grayscale:
         opts["monochrome"] = "1"
+        canv_3 = canvases_cpu_f01.repeat(1, 3, 1, 1)   # [T,3,H,W]
+        rec_3, bits = _pyav_video_roundtrip(
+            canv_3,
+            encoder="libaom-av1",
+            container="ivf",
+            pix_fmt=pix_fmt,
+            fps=fps,
+            gop=gop,
+            options=opts,
+            force_bitrate0=True,      # <- critical for CQ
+            grayscale=False,          # feeding color
+        )
+        return rec_3[:, :1, ...], bits
 
     return _pyav_video_roundtrip(
         canvases_cpu_f01,
@@ -178,8 +197,8 @@ def av1_video_roundtrip(
         fps=fps,
         gop=gop,
         options=opts,
-        force_bitrate0=False,
-        grayscale=grayscale,
+        force_bitrate0=True,          # <- critical for CQ
+        grayscale=False,
     )
 
 

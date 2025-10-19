@@ -202,25 +202,26 @@ class Trainer:
 
     def qp_to_lambda(self):
         # assert that only one of dcvc_qp and jpeg.quality is set
-        dcvc_qp = self.cfg.codec.dcvc_qp
-        quality = self.cfg.codec.quality
-        lambda_min = self.cfg.fine_train.lambda_min
-        lambda_max = self.cfg.fine_train.lambda_max
+        # dcvc_qp = self.cfg.codec.dcvc_qp
+        # quality = self.cfg.codec.quality
+        # lambda_min = self.cfg.fine_train.lambda_min
+        # lambda_max = self.cfg.fine_train.lambda_max
 
 
-        if dcvc_qp is not None:
-            lambda_val = math.log(lambda_min) + dcvc_qp / (64 - 1) * (
-                    math.log(lambda_max) - math.log(lambda_min))
-            lambda_val = math.pow(math.e, lambda_val)
-        elif quality is not None:
-            qp = quality
-            lambda_val = math.log(lambda_min) + qp / (100 - 1) * (
-                    math.log(lambda_max) - math.log(lambda_min))
-            lambda_val = math.pow(math.e, lambda_val)
-        else:
-            lambda_val = 1.0
+        # if dcvc_qp is not None:
+        #     lambda_val = math.log(lambda_min) + dcvc_qp / (64 - 1) * (
+        #             math.log(lambda_max) - math.log(lambda_min))
+        #     lambda_val = math.pow(math.e, lambda_val)
+        # elif quality is not None:
+        #     qp = quality
+        #     lambda_val = math.log(lambda_min) + qp / (100 - 1) * (
+        #             math.log(lambda_max) - math.log(lambda_min))
+        #     lambda_val = math.pow(math.e, lambda_val)
+        # else:
+        #     lambda_val = 1.0
 
-        return lambda_val
+        # return lambda_val
+        return 0.0
 
     # -------------------------------------------------------------------------
     # Main step

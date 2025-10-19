@@ -31,9 +31,9 @@ python eval_plane_video_compress.py \
   --codec hevc --crf 28 --gop 10 --pix-fmt yuv444p
 
 python eval_plane_video_compress.py \
-        --segment-root logs/dynerf_flame_steak/hevc_crf12 \
-                --startframe 0 --numframe 10 --packing_mode flatten \
-                    --qmode global   --codec hevc --crf 12 --gop 10 --pix-fmt yuv444p
+    --startframe 0 --numframe 20 --packing_mode flatten \
+    --qmode global --gop 20 --pix-fmt yuv444p \
+    --segment-root logs/dynerf_flame_steak/av1_qp20 --codec av1 --qp 20
 """
 
 import argparse
@@ -49,6 +49,12 @@ from PIL import Image
 
 import torch
 import torch.nn.functional as F
+
+from src.models.model_utils import (
+    hevc_video_roundtrip,
+    av1_video_roundtrip,
+    vp9_video_roundtrip,
+)
 
 # ---------------------------------------------------------------------
 # Utilities (file IO, sorting, tensor helpers)
@@ -96,198 +102,113 @@ def pad_to_align(canv: torch.Tensor, align: int) -> Tuple[torch.Tensor, int, int
     return canv_pad, H, W
 
 # ---------------------------------------------------------------------
-# PyAV roundtrips (match HEVCVideoCodecWrapper/AV1VideoCodecWrapper cores)
-# ---------------------------------------------------------------------
-
-def hevc_roundtrip(canvases_cpu: torch.Tensor,
-                   fps: int, gop: int, crf: int, preset: str, pix_fmt: str) -> Tuple[torch.Tensor, int]:
-    """
-    canvases_cpu: [T,3,H,W] float in [0,1], CPU
-    Returns: (rec [T,3,H,W] CPU, total_bits)
-    """
-    assert canvases_cpu.device.type == 'cpu' and canvases_cpu.dim() == 4 and canvases_cpu.shape[1] == 3
-    T, _, H, W = canvases_cpu.shape
-
-    out_buf = io.BytesIO()
-    oc = av.open(out_buf, mode='w', format='hevc')  # raw HEVC Annex-B
-
-    stream = oc.add_stream('libx265', rate=fps)
-    stream.width  = W
-    stream.height = H
-    stream.pix_fmt = pix_fmt
-    stream.time_base = Fraction(1, fps)
-    stream.codec_context.time_base = Fraction(1, fps)
-    stream.gop_size = gop
-
-    # Keep cadence stable and decodable as an elementary stream
-    x265_params = f"repeat-headers=1:keyint={gop}:min-keyint={gop}:scenecut=0"
-    opts = {
-        'crf': str(crf),
-        'preset': str(preset),
-        'x265-params': x265_params,
-    }
-    for k, v in opts.items():
-        stream.codec_context.options[k] = v
-
-    # Encode
-    for t in range(T):
-        frm = (canvases_cpu[t].clamp(0,1).permute(1,2,0).contiguous().numpy() * 255.0 + 0.5).astype(np.uint8)
-        frame = av.VideoFrame.from_ndarray(frm, format='rgb24')
-        frame = frame.reformat(format=pix_fmt)
-        for packet in stream.encode(frame):
-            oc.mux(packet)
-    for packet in stream.encode(None):
-        oc.mux(packet)
-    oc.close()
-
-    bitstream = out_buf.getvalue()
-    total_bits = len(bitstream) * 8
-
-    # Decode
-    in_buf = io.BytesIO(bitstream)
-    ic = av.open(in_buf, mode='r')
-
-    rec_frames = []
-    for frame in ic.decode(video=0):
-        rgb = frame.to_ndarray(format='rgb24')  # HxWx3 uint8
-        rec_frames.append(torch.from_numpy(rgb).permute(2,0,1).float() / 255.0)
-    ic.close()
-
-    if len(rec_frames) != T:
-        raise RuntimeError(f"[HEVC] decoded {len(rec_frames)} frames; expected {T}")
-
-    out = torch.stack(rec_frames, dim=0)
-    if out.shape[-2:] != (H, W):
-        raise RuntimeError(f"[HEVC] size mismatch: in ({H},{W}) vs out {tuple(out.shape[-2:])}")
-
-    return out, total_bits
-
-
-def av1_roundtrip(canvases_cpu: torch.Tensor,
-                  fps: int, gop: int, crf: int, cpu_used: str, pix_fmt: str) -> Tuple[torch.Tensor, int]:
-    """
-    canvases_cpu: [T,3,H,W] float in [0,1], CPU
-    Returns: (rec [T,3,H,W] CPU, total_bits)
-    """
-    assert canvases_cpu.device.type == 'cpu' and canvases_cpu.dim() == 4 and canvases_cpu.shape[1] == 3
-    T, _, H, W = canvases_cpu.shape
-
-    out_buf = io.BytesIO()
-    oc = av.open(out_buf, mode='w', format='ivf')  # AV1-friendly container
-
-    stream = oc.add_stream('libaom-av1', rate=fps)
-    stream.width  = W
-    stream.height = H
-    stream.pix_fmt = pix_fmt
-    stream.time_base = Fraction(1, fps)
-    stream.codec_context.time_base = Fraction(1, fps)
-    stream.gop_size = gop
-
-    opts = {
-        'crf': str(crf),
-        'cpu-used': str(cpu_used),
-        'enable-chroma-deltaq': '0',
-    }
-    for k, v in opts.items():
-        stream.codec_context.options[k] = v
-
-    # Encode
-    for t in range(T):
-        frm = (canvases_cpu[t].clamp(0,1).permute(1,2,0).contiguous().numpy() * 255.0 + 0.5).astype(np.uint8)
-        frame = av.VideoFrame.from_ndarray(frm, format='rgb24')
-        frame = frame.reformat(format=pix_fmt)
-        for packet in stream.encode(frame):
-            oc.mux(packet)
-    for packet in stream.encode(None):
-        oc.mux(packet)
-    oc.close()
-
-    bitstream = out_buf.getvalue()
-    total_bits = len(bitstream) * 8
-
-    # Decode
-    in_buf = io.BytesIO(bitstream)
-    ic = av.open(in_buf, mode='r')
-
-    rec_frames = []
-    for frame in ic.decode(video=0):
-        rgb = frame.to_ndarray(format='rgb24')  # HxWx3 uint8
-        rec_frames.append(torch.from_numpy(rgb).permute(2,0,1).float() / 255.0)
-    ic.close()
-
-    if len(rec_frames) != T:
-        raise RuntimeError(f"[AV1] decoded {len(rec_frames)} frames; expected {T}")
-
-    out = torch.stack(rec_frames, dim=0)
-    if out.shape[-2:] != (H, W):
-        raise RuntimeError(f"[AV1] size mismatch: in ({H},{W}) vs out {tuple(out.shape[-2:])}")
-
-    return out, total_bits
-
-# ---------------------------------------------------------------------
 # Main eval: compress each stream directory as a video segment
 # ---------------------------------------------------------------------
 
 STREAM_DIRS = ["xy_plane", "xz_plane", "yz_plane", "density"]
 
-def run_one_stream(in_dir: str,
-                   out_dir: str,
-                   codec: str,
-                   fps: int, gop: int, crf: int,
-                   preset: str, cpu_used: str,
-                   pix_fmt: str,
-                   align: int) -> Dict[str, float]:
+def run_one_stream(
+    in_dir: str,
+    out_dir: str,
+    *,
+    codec: str,
+    fps: int,
+    gop: int,
+    qp: int,
+    preset: str,
+    cpu_used: str,
+    pix_fmt: str,
+    align: int,
+    packing_mode: str,
+) -> Dict[str, float]:
     """
-    Compress a single stream directory (sequence of PNGs), write recon PNGs,
-    and return metrics: { 'T':..., 'H':..., 'W':..., 'Hp':..., 'Wp':..., 'total_bits':..., 'bpp':..., 'psnr':... }
+    Compress a single stream directory (sequence of packed PNG canvases), write recon PNGs,
+    and return metrics computed on the packed canvases:
+      { 'T','H','W','Hp','Wp','total_bits','bpp','psnr' }
     """
     names = list_pngs_sorted(in_dir)
     if not names:
         return {}
 
-    # Load -> [T,3,H,W] CPU
-    canv = load_png_stack(names)  # CPU float in [0,1]
+    # Load packed canvases (always 3-channel on disk)
+    canv = load_png_stack(names)  # [T,3,H,W], CPU float in [0,1]
     T, _, H, W = canv.shape
 
-    # Pad to align (replicate), matching training bpp accounting
-    canv_pad, H2, W2 = pad_to_align(canv, align=align)  # H2=W, H, we keep for crop in case, though canv already packed
-    Hp, Wp = canv_pad.shape[-2], canv_pad.shape[-1]
+    # Match training: pad to align, then encode/decode, then crop back
+    canv_pad, H2, W2 = pad_to_align(canv, align=align)   # [T,3,Hp,Wp]
+    Hp, Wp = canv_pad.shape[-2:]
 
-    # Roundtrip
-    if codec == "hevc":
-        rec_pad, total_bits = hevc_roundtrip(canv_pad, fps=fps, gop=gop, crf=crf, preset=preset, pix_fmt=pix_fmt)
-    elif codec == "av1":
-        rec_pad, total_bits = av1_roundtrip(canv_pad, fps=fps, gop=gop, crf=crf, cpu_used=cpu_used, pix_fmt=pix_fmt)
+    # Decide grayscale path:
+    #  - Planes: grayscale if packing_mode == "flatten" (we duplicated channels when saving)
+    #  - Density: always grayscale (packed as mono tiled, saved as RGB duplicates)
+    stream_name = os.path.basename(in_dir.rstrip("/"))
+    is_density = (stream_name == "density")
+    use_gray = is_density or (packing_mode == "flatten")
+
+    # Build the input to the codec helpers to match training behavior
+    if use_gray:
+        mono = canv_pad[:, :1, ...].contiguous()  # [T,1,Hp,Wp] — take the first (duplicated) channel
+        if codec == "hevc":
+            rec_mono, total_bits = hevc_video_roundtrip(
+                mono, fps=fps, gop=gop, qp=qp, preset=preset, pix_fmt=pix_fmt, grayscale=True
+            )
+        elif codec == "av1":
+            rec_mono, total_bits = av1_video_roundtrip(
+                mono, fps=fps, gop=gop, qp=qp, cpu_used=cpu_used, pix_fmt=pix_fmt, grayscale=True
+            )
+        elif codec == "vp9":
+            rec_mono, total_bits = vp9_video_roundtrip(
+                mono, fps=fps, gop=gop, qp=qp, cpu_used=cpu_used, pix_fmt=pix_fmt, grayscale=True
+            )
+        else:
+            raise ValueError(f"Unsupported --codec {codec}. Use 'hevc', 'av1', or 'vp9'.")
+        # Expand back to 3 channels so the unpacking script (and PNG writer) expect the same shape
+        rec_pad = rec_mono.repeat(1, 3, 1, 1)  # [T,3,Hp,Wp]
     else:
-        raise ValueError(f"Unsupported --codec {codec}. Use 'hevc' or 'av1'.")
+        if codec == "hevc":
+            rec_pad, total_bits = hevc_video_roundtrip(
+                canv_pad, fps=fps, gop=gop, qp=qp, preset=preset, pix_fmt=pix_fmt
+            )
+        elif codec == "av1":
+            rec_pad, total_bits = av1_video_roundtrip(
+                canv_pad, fps=fps, gop=gop, qp=qp, cpu_used=cpu_used, pix_fmt=pix_fmt
+            )
+        elif codec == "vp9":
+            rec_pad, total_bits = vp9_video_roundtrip(
+                canv_pad, fps=fps, gop=gop, qp=qp, cpu_used=cpu_used, pix_fmt=pix_fmt
+            )
+        else:
+            raise ValueError(f"Unsupported --codec {codec}. Use 'hevc', 'av1', or 'vp9'.")
 
-    # Crop back to original size
-    rec = rec_pad[..., :H, :W].contiguous()
+    # Crop back to original packed canvas size (matches training before unpack)
+    rec = rec_pad[..., :H, :W].contiguous()  # [T,3,H,W]
 
-    # Save reconstructed PNGs
+    # Save reconstructed canvases
     save_png_stack(out_dir, rec, names)
 
-    # Metrics
+    # Metrics on canvases (diagnostic)
     mse = F.mse_loss(rec, canv)
-    psnr = float(10.0 * torch.log10((1.0 ** 2) / (mse + 1e-12)))  # peak=1.0 since canvases are [0,1]
+    psnr = float(10.0 * torch.log10((1.0 ** 2) / (mse + 1e-12)))  # peak=1.0
     bpp  = float(total_bits) / float(T * Hp * Wp)
 
     return dict(T=T, H=H, W=W, Hp=Hp, Wp=Wp, total_bits=float(total_bits), bpp=bpp, psnr=psnr)
 
 
 def main():
-    p = argparse.ArgumentParser(description="Evaluate packed-plane video compression (HEVC/AV1) in-memory.")
-    p.add_argument('--segment-root', required=True, help="Path to the segment folder containing xy_plane/xz_plane/yz_plane[/density].")
-    p.add_argument('--codec', choices=['hevc', 'av1'], required=True)
-    p.add_argument('--crf', type=int, default=28)
-    p.add_argument('--gop', type=int, default=10)
+    p = argparse.ArgumentParser(description="Evaluate packed-plane video compression (HEVC/AV1/VP9) with QP, matching training.")
+    p.add_argument('--segment-root', required=True,
+                   help="Path to the segment folder containing xy_plane/xz_plane/yz_plane[/density].")
+    p.add_argument('--codec', choices=['hevc', 'av1', 'vp9'], required=True)
+    p.add_argument('--qp', type=int, required=True, help="Constant quantizer (QP).")
+    p.add_argument('--gop', type=int, default=20)
     p.add_argument('--fps', type=int, default=30)
     p.add_argument("--startframe", type=int, default=0, help="Start frame id (inclusive)")
-    p.add_argument("--numframe", type=int, default=1, help="Number of frames")
-    p.add_argument("--packing_mode", choices=["flatten", "separate", "grouped", "correlation", "flatfour"], required=True)
+    p.add_argument("--numframe", type=int, default=1,  help="Number of frames")
+    p.add_argument("--packing_mode", choices=["flatten", "mosaic", "flat4", "separate", "grouped", "correlation", "flatfour"],
+                   required=True, help="Packing mode used when generating the canvases. 'flatten' triggers grayscale path.")
     p.add_argument("--qmode", choices=["global", "per_channel"], required=True)
     p.add_argument('--preset', type=str, default='medium', help="HEVC x265 preset (ultrafast..placebo).")
-    p.add_argument('--cpu-used', type=str, default='4', help="AV1 libaom cpu-used (0..8; lower=slower/better).")
+    p.add_argument('--cpu-used', type=str, default='6', help="AV1/VP9 cpu-used (0..8; lower=slower/better).")
     p.add_argument('--pix-fmt', type=str, default='yuv444p', help="Prefer yuv444p for packed canvases.")
     p.add_argument('--align', type=int, default=32, help="Alignment used when packing (DCVC_ALIGN).")
     p.add_argument('--outdir', default=None, help="Where to write recon images & logs. Default: auto under segment root.")
@@ -300,7 +221,7 @@ def main():
 
     # Default output folder naming to mirror training knobs
     if args.outdir is None:
-        out_root = os.path.join(seg, f"compressed_{args.codec}_crf{args.crf}_g{args.gop}_{args.pix_fmt}")
+        out_root = os.path.join(seg, f"compressed_{args.codec}_qp{args.qp}_g{args.gop}_{args.pix_fmt}")
     else:
         out_root = os.path.abspath(args.outdir)
     os.makedirs(out_root, exist_ok=True)
@@ -310,8 +231,10 @@ def main():
     total_pixels_padded = 0
     S = args.startframe
     N = args.numframe
+
+    STREAM_DIRS = ["xy_plane", "xz_plane", "yz_plane", "density"]
     for sub in STREAM_DIRS:
-        in_dir  = os.path.join(seg, f"planeimg_{S:02d}_{N-1:02d}_{args.packing_mode}_{args.qmode}", sub)
+        in_dir  = os.path.join(seg, f"planeimg_{S:02d}_{N-1:02d}_{args.packing_mode}_flatten_{args.qmode}", sub)
         out_dir = os.path.join(out_root, sub)
         if not os.path.isdir(in_dir):
             raise FileNotFoundError(f"Missing input directory: {in_dir}")
@@ -321,21 +244,21 @@ def main():
             in_dir=in_dir,
             out_dir=out_dir,
             codec=args.codec,
-            fps=args.fps, gop=args.gop, crf=args.crf,
+            fps=args.fps, gop=args.gop, qp=args.qp,
             preset=args.preset, cpu_used=args.cpu_used,
             pix_fmt=args.pix_fmt,
-            align=args.align
+            align=args.align,
+            packing_mode=args.packing_mode,
         )
         if metrics:
             all_metrics[sub] = metrics
             total_bits_sum += metrics['total_bits']
             total_pixels_padded += int(metrics['T'] * metrics['Hp'] * metrics['Wp'])
-
             print(f"  -> {sub}: bits={metrics['total_bits']:.0f}, bpp={metrics['bpp']:.6f}, PSNR={metrics['psnr']:.3f} dB")
         else:
             print(f"  -> {sub}: (no frames)")
 
-    # encoded_bits.txt (compat with prior JPEG eval convention)
+    # encoded_bits.txt (compat with prior convention)
     bits_txt = os.path.join(out_root, "encoded_bits.txt")
     with open(bits_txt, "w") as f:
         for sub, m in all_metrics.items():

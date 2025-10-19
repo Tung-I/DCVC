@@ -12,6 +12,8 @@ data = dict(
 	xyz_min = [-0.1531104 , -0.99574334, -0.40296442],
 	xyz_max = [0.20760746, 0.01441086, 0.49955044],
 	test_frames =[5,41],
+    height=480,
+    width=640,
 	inverse_y=True,
 	load2gpu_on_the_fly=True,
 )

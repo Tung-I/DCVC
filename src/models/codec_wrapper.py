@@ -129,6 +129,10 @@ class VideoCodecWrapper(nn.Module):
                     pix_fmt=self.pix_fmt, grayscale=True
                 )
             elif self.backend == "av1":
+                # for q in [20, 26, 32, 38, 44]:
+                #     _, bits = av1_video_roundtrip(mono_cpu, fps=30, gop=20, qp=q, cpu_used=6, pix_fmt="yuv444p", grayscale=True)
+                #     print(q, bits)
+                # raise Exception
                 rec_mono_cpu, bits = av1_video_roundtrip(
                     mono_cpu, fps=self.fps, gop=self.gop, qp=self.qp, cpu_used=self.cpu_used,
                     pix_fmt=self.pix_fmt, grayscale=True

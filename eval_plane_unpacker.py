@@ -22,6 +22,10 @@ Usage:
     python eval_plane_unpacker.py  --root_dir logs/nerf_synthetic/lego_image \
     --numframe 1 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
     --qp 20 --codec jpeg
+
+    python eval_plane_unpacker.py \
+    --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
+    --qp 20 --codec av1 --root_dir logs/dynerf_flame_steak/av1_qp20 
 """
 
 def _load_rgb01(path: str) -> torch.Tensor:
@@ -49,8 +53,11 @@ def parse_args():
     p.add_argument("--orient", choices=["yx", "yz", "xz"], default="xz",
                    help="(kept for compatibility; not used by unpacker)")
     p.add_argument("--qp", type=int, default=40, help="(for codec folder name if using jpeg)")
-    p.add_argument("--codec", choices=["dcvc", "jpeg"], default="dcvc",
+    p.add_argument("--codec", choices=["dcvc", "jpeg", "av1", "hevc", "vp9"], default=None,
                    help="Choose folder containing reconstructed images")
+    p.add_argument('--pix-fmt', type=str, default='yuv444p', help="Prefer yuv444p for packed canvases.")
+    p.add_argument('--gop', type=int, default=20)
+    p.add_argument('--fps', type=int, default=30)
     return p.parse_args()
 
 def main():
@@ -66,7 +73,7 @@ def main():
     # reconstructed images folder (e.g., *_jpeg_qp80)
     rec_img_dir = os.path.join(
         root,
-        f"planeimg_{S:02d}_{N:02d}_{args.plane_packing_mode}_{args.grid_packing_mode}_{args.qmode}_{args.codec}_qp{args.qp}"
+        f"compressed_{args.codec}_qp{args.qp}_g{args.gop}_{args.pix_fmt}"
     )
 
     print(f"[INFO] Loaded meta data from {meta_dir}")
