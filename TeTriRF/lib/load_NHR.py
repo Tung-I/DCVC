@@ -302,45 +302,17 @@ class NHR_Dataset(torch.utils.data.Dataset):
         self.test_views = abs_test
 
         # # ---------- i_split construction ----------
-        # # (train/val/test) + [replay, current] without assuming constant views
-        # if len(self.test_views) == 0:
-        #     i_split = [np.arange(0, len(res_poses)) for _ in range(3)]
-        # else:
-        #     train_idx = [i for i in np.arange(0, len(res_poses)) if i not in self.test_views]
-        #     i_split = [train_idx, self.test_views, self.test_views]
+        # (train/val/test) + [replay, current] without assuming constant views
+        if len(self.test_views) == 0:
+            i_split = [np.arange(0, len(res_poses)) for _ in range(3)]
+        else:
+            train_idx = [i for i in np.arange(0, len(res_poses)) if i not in self.test_views]
+            i_split = [train_idx, self.test_views, self.test_views]
         
-        # # Replay range = sum of previous frame counts
-        # replay_len = sum(prev_counts)
-        # i_split.append(np.arange(0, replay_len))                       # replay data
-        # i_split.appdend(np.arange(replay_len, replay_len + N_current))  # current data
-
-
-        # # ---------- i_split construction ----------
-        replay_len  = sum(prev_counts)
-        i_current   = np.arange(replay_len, replay_len + N_current)
-
-        # remap test views to the current frame range only
-        test_current = []
-        for v in self.test_views:
-            if v < N_current:
-                test_current.append(int(replay_len + v))
-        test_current = np.array(sorted(set(test_current)), dtype=np.int64)
-
-        # i_train: only current-frame views excluding current test views
-        train_current = np.array(
-            [i for i in i_current if i not in set(test_current.tolist())],
-            dtype=np.int64
-        )
-
-        # Final i_split = [i_train, i_val, i_test, i_replay, i_current]
-        i_split = [
-            train_current,
-            test_current,
-            test_current,
-            np.arange(0, replay_len, dtype=np.int64),   # replay indices (prev frames)
-            i_current                                   # current-frame indices
-        ]
-        # # ---------- i_split construction ----------
+        # Replay range = sum of previous frame counts
+        replay_len = sum(prev_counts)
+        i_split.append(np.arange(0, replay_len))                       # replay data
+        i_split.append(np.arange(replay_len, replay_len + N_current))  # current data
 
         # honor scale on training split only
         i_split[0] = i_split[0][::scale]
