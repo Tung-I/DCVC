@@ -1,0 +1,31 @@
+{
+  "methods": [
+    {
+      "name": "3DGStream",
+      "marker": "o",
+      "color": "orange",
+      "size": 55,
+      "points": [
+        { "bitrate_Mbit": 1248, "psnr": 31.58, "lpips": 0.140}
+      ]
+    },
+    {
+      "name": "Queen-S",
+      "marker": "o",
+      "color": "pink",
+      "size": 55,
+      "points": [
+        { "bitrate_Mbit": 108, "psnr": 31.89, "lpips": 0.139}
+      ]
+    },
+    {
+      "name": "Queen-L",
+      "marker": "o",
+      "color": "purple",
+      "size": 55,
+      "points": [
+        { "bitrate_Mbit": 124.8, "psnr": 32.19, "lpips": 0.136}
+      ]
+    }
+  ]
+}

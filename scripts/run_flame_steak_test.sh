@@ -1,23 +1,35 @@
 cd ..
-python render.py --render_test --frame_ids 0 5 10 15 19 \
-        --config configs/dynerf_flame_steak/av1_qp20.py  \
-        --ckpt_dir logs/dynerf_flame_steak/av1_qp20/compressed_av1_qp20_g20_yuv444p
+# python render.py --render_test --frame_ids 0 5 10 15 19 \
+#         --config configs/dynerf_flame_steak/av1_qp20.py  \
+#         --ckpt_dir logs/dynerf_flame_steak/av1_qp20/compressed_av1_qp20_g20_yuv444p
+
+# python render.py --render_test --frame_ids 0 5 10 15 19 \
+#         --config configs/dynerf_flame_steak/av1_qp26.py  \
+#         --ckpt_dir logs/dynerf_flame_steak/av1_qp26/compressed_av1_qp26_g20_yuv444p
+
+# python render.py --render_test --frame_ids 0 5 10 15 19 \
+#         --config configs/dynerf_flame_steak/av1_qp32.py  \
+#         --ckpt_dir logs/dynerf_flame_steak/av1_qp32/compressed_av1_qp32_g20_yuv444p
+
+# python render.py --render_test --frame_ids 0 5 10 15 19 \
+#         --config configs/dynerf_flame_steak/av1_qp38.py  \
+#         --ckpt_dir logs/dynerf_flame_steak/av1_qp38/compressed_av1_qp38_g20_yuv444p
+
+# python render.py --render_test --frame_ids 0 5 10 15 19 \
+#         --config configs/dynerf_flame_steak/av1_qp44.py  \
+#         --ckpt_dir logs/dynerf_flame_steak/av1_qp44/compressed_av1_qp44_g20_yuv444p
 
 python render.py --render_test --frame_ids 0 5 10 15 19 \
-        --config configs/dynerf_flame_steak/av1_qp26.py  \
-        --ckpt_dir logs/dynerf_flame_steak/av1_qp26/compressed_av1_qp26_g20_yuv444p
+        --config configs/dynerf_flame_steak/av1_qp50.py  \
+        --ckpt_dir logs/dynerf_flame_steak/av1_qp50/compressed_av1_qp50_g20_yuv444p
 
 python render.py --render_test --frame_ids 0 5 10 15 19 \
-        --config configs/dynerf_flame_steak/av1_qp32.py  \
-        --ckpt_dir logs/dynerf_flame_steak/av1_qp32/compressed_av1_qp32_g20_yuv444p
+        --config configs/dynerf_flame_steak/av1_qp56.py  \
+        --ckpt_dir logs/dynerf_flame_steak/av1_qp56/compressed_av1_qp56_g20_yuv444p
 
 python render.py --render_test --frame_ids 0 5 10 15 19 \
-        --config configs/dynerf_flame_steak/av1_qp38.py  \
-        --ckpt_dir logs/dynerf_flame_steak/av1_qp38/compressed_av1_qp38_g20_yuv444p
-
-python render.py --render_test --frame_ids 0 5 10 15 19 \
-        --config configs/dynerf_flame_steak/av1_qp44.py  \
-        --ckpt_dir logs/dynerf_flame_steak/av1_qp44/compressed_av1_qp44_g20_yuv444p
+        --config configs/dynerf_flame_steak/av1_qp62.py  \
+        --ckpt_dir logs/dynerf_flame_steak/av1_qp62/compressed_av1_qp62_g20_yuv444p
 
 
 # python render.py --render_test --frame_ids 0 5 10 15 19 \
@@ -62,25 +74,37 @@ python render.py --render_test --frame_ids 0 5 10 15 19 \
 #         --ckpt_dir logs/dynerf_flame_steak/vp9_qp44/compressed_vp9_qp44_g20_yuv444p
 
 ############################################################################33
-python render.py --render_test --frame_ids 0 5 10 15 19 \
-        --config configs/dynerf_flame_steak/av1_qp20.py  \
-        --ckpt_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp20_g20_yuv444p
+# python render.py --render_test --frame_ids 0 5 10 15 19 \
+#         --config configs/dynerf_flame_steak/av1_qp20.py  \
+#         --ckpt_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp20_g20_yuv444p
+
+# python render.py --render_test --frame_ids 0 5 10 15 19 \
+#         --config configs/dynerf_flame_steak/av1_qp26.py  \
+#         --ckpt_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp26_g20_yuv444p
+
+# python render.py --render_test --frame_ids 0 5 10 15 19 \
+#         --config configs/dynerf_flame_steak/av1_qp32.py  \
+#         --ckpt_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp32_g20_yuv444p
+
+# python render.py --render_test --frame_ids 0 5 10 15 19 \
+#         --config configs/dynerf_flame_steak/av1_qp38.py  \
+#         --ckpt_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp38_g20_yuv444p
+
+# python render.py --render_test --frame_ids 0 5 10 15 19 \
+#         --config configs/dynerf_flame_steak/av1_qp44.py  \
+#         --ckpt_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp44_g20_yuv444p
 
 python render.py --render_test --frame_ids 0 5 10 15 19 \
-        --config configs/dynerf_flame_steak/av1_qp26.py  \
-        --ckpt_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp26_g20_yuv444p
+        --config configs/dynerf_flame_steak/av1_qp50.py  \
+        --ckpt_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp50_g20_yuv444p
 
 python render.py --render_test --frame_ids 0 5 10 15 19 \
-        --config configs/dynerf_flame_steak/av1_qp32.py  \
-        --ckpt_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp32_g20_yuv444p
+        --config configs/dynerf_flame_steak/av1_qp56.py  \
+        --ckpt_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp56_g20_yuv444p
 
 python render.py --render_test --frame_ids 0 5 10 15 19 \
-        --config configs/dynerf_flame_steak/av1_qp38.py  \
-        --ckpt_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp38_g20_yuv444p
-
-python render.py --render_test --frame_ids 0 5 10 15 19 \
-        --config configs/dynerf_flame_steak/av1_qp44.py  \
-        --ckpt_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp44_g20_yuv444p
+        --config configs/dynerf_flame_steak/av1_qp62.py  \
+        --ckpt_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp62_g20_yuv444p
 
 
 # python render.py --render_test --frame_ids 0 5 10 15 19 \

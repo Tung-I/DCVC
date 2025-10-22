@@ -1,24 +1,36 @@
 cd ..
 
-python eval_plane_unpacker.py \
-    --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
-    --qp 20 --codec av1 --root_dir logs/dynerf_flame_steak/av1_qp20 
+# python eval_plane_unpacker.py \
+#     --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
+#     --qp 20 --codec av1 --root_dir logs/dynerf_flame_steak/av1_qp20 
+
+# python eval_plane_unpacker.py \
+#     --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
+#     --qp 26 --codec av1 --root_dir logs/dynerf_flame_steak/av1_qp26 
+
+# python eval_plane_unpacker.py \
+#     --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
+#     --qp 32 --codec av1 --root_dir logs/dynerf_flame_steak/av1_qp32 
+
+# python eval_plane_unpacker.py \
+#     --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
+#     --qp 38 --codec av1 --root_dir logs/dynerf_flame_steak/av1_qp38 
+
+# python eval_plane_unpacker.py \
+#     --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
+#     --qp 44 --codec av1 --root_dir logs/dynerf_flame_steak/av1_qp44 
 
 python eval_plane_unpacker.py \
     --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
-    --qp 26 --codec av1 --root_dir logs/dynerf_flame_steak/av1_qp26 
+    --qp 50 --codec av1 --root_dir logs/dynerf_flame_steak/av1_qp50
 
 python eval_plane_unpacker.py \
     --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
-    --qp 32 --codec av1 --root_dir logs/dynerf_flame_steak/av1_qp32 
+    --qp 56 --codec av1 --root_dir logs/dynerf_flame_steak/av1_qp56  
 
 python eval_plane_unpacker.py \
     --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
-    --qp 38 --codec av1 --root_dir logs/dynerf_flame_steak/av1_qp38 
-
-python eval_plane_unpacker.py \
-    --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
-    --qp 44 --codec av1 --root_dir logs/dynerf_flame_steak/av1_qp44 
+    --qp 62 --codec av1 --root_dir logs/dynerf_flame_steak/av1_qp62 
 
 
 # python eval_plane_unpacker.py \
@@ -67,25 +79,37 @@ python eval_plane_unpacker.py \
 
 
 
-python eval_plane_unpacker.py \
-    --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
-    --qp 20 --codec av1 --root_dir logs/dynerf_flame_steak/flame_steak_video_ds3
+# python eval_plane_unpacker.py \
+#     --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
+#     --qp 20 --codec av1 --root_dir logs/dynerf_flame_steak/flame_steak_video_ds3
+
+# python eval_plane_unpacker.py \
+#     --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
+#     --qp 26 --codec av1 --root_dir logs/dynerf_flame_steak/flame_steak_video_ds3
+
+# python eval_plane_unpacker.py \
+#     --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
+#     --qp 32 --codec av1 --root_dir logs/dynerf_flame_steak/flame_steak_video_ds3
+
+# python eval_plane_unpacker.py \
+#     --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
+#     --qp 38 --codec av1 --root_dir logs/dynerf_flame_steak/flame_steak_video_ds3
+
+# python eval_plane_unpacker.py \
+#     --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
+#     --qp 44 --codec av1 --root_dir logs/dynerf_flame_steak/flame_steak_video_ds3
 
 python eval_plane_unpacker.py \
     --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
-    --qp 26 --codec av1 --root_dir logs/dynerf_flame_steak/flame_steak_video_ds3
+    --qp 50 --codec av1 --root_dir logs/dynerf_flame_steak/flame_steak_video_ds3
 
 python eval_plane_unpacker.py \
     --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
-    --qp 32 --codec av1 --root_dir logs/dynerf_flame_steak/flame_steak_video_ds3
+    --qp 56 --codec av1 --root_dir logs/dynerf_flame_steak/flame_steak_video_ds3
 
 python eval_plane_unpacker.py \
     --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
-    --qp 38 --codec av1 --root_dir logs/dynerf_flame_steak/flame_steak_video_ds3
-
-python eval_plane_unpacker.py \
-    --numframe 20 --plane_packing_mode flatten --grid_packing_mode flatten --qmode global \
-    --qp 44 --codec av1 --root_dir logs/dynerf_flame_steak/flame_steak_video_ds3
+    --qp 62 --codec av1 --root_dir logs/dynerf_flame_steak/flame_steak_video_ds3
 
 
 

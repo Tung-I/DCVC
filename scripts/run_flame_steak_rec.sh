@@ -1,29 +1,44 @@
 cd ..
 
-python eval_plane_video_compress.py \
-    --startframe 0 --numframe 20 --packing_mode flatten \
-    --qmode global --gop 20 --pix-fmt yuv444p \
-    --segment-root logs/dynerf_flame_steak/av1_qp20 --codec av1 --qp 20
+# python eval_plane_video_compress.py \
+#     --startframe 0 --numframe 20 --packing_mode flatten \
+#     --qmode global --gop 20 --pix-fmt yuv444p \
+#     --segment-root logs/dynerf_flame_steak/av1_qp20 --codec av1 --qp 20
 
-python eval_plane_video_compress.py \
-    --startframe 0 --numframe 20 --packing_mode flatten \
-    --qmode global --gop 20 --pix-fmt yuv444p \
-    --segment-root logs/dynerf_flame_steak/av1_qp26 --codec av1 --qp 26
+# python eval_plane_video_compress.py \
+#     --startframe 0 --numframe 20 --packing_mode flatten \
+#     --qmode global --gop 20 --pix-fmt yuv444p \
+#     --segment-root logs/dynerf_flame_steak/av1_qp26 --codec av1 --qp 26
 
-python eval_plane_video_compress.py \
-    --startframe 0 --numframe 20 --packing_mode flatten \
-    --qmode global --gop 20 --pix-fmt yuv444p \
-    --segment-root logs/dynerf_flame_steak/av1_qp32 --codec av1 --qp 32
+# python eval_plane_video_compress.py \
+#     --startframe 0 --numframe 20 --packing_mode flatten \
+#     --qmode global --gop 20 --pix-fmt yuv444p \
+#     --segment-root logs/dynerf_flame_steak/av1_qp32 --codec av1 --qp 32
 
-python eval_plane_video_compress.py \
-    --startframe 0 --numframe 20 --packing_mode flatten \
-    --qmode global --gop 20 --pix-fmt yuv444p \
-    --segment-root logs/dynerf_flame_steak/av1_qp38 --codec av1 --qp 38
+# python eval_plane_video_compress.py \
+#     --startframe 0 --numframe 20 --packing_mode flatten \
+#     --qmode global --gop 20 --pix-fmt yuv444p \
+#     --segment-root logs/dynerf_flame_steak/av1_qp38 --codec av1 --qp 38
 
-python eval_plane_video_compress.py \
-    --startframe 0 --numframe 20 --packing_mode flatten \
-    --qmode global --gop 20 --pix-fmt yuv444p \
-    --segment-root logs/dynerf_flame_steak/av1_qp44 --codec av1 --qp 44
+# python eval_plane_video_compress.py \
+#     --startframe 0 --numframe 20 --packing_mode flatten \
+#     --qmode global --gop 20 --pix-fmt yuv444p \
+#     --segment-root logs/dynerf_flame_steak/av1_qp44 --codec av1 --qp 44
+
+# python eval_plane_video_compress.py \
+#     --startframe 0 --numframe 20 --packing_mode flatten \
+#     --qmode global --gop 20 --pix-fmt yuv444p \
+#     --segment-root logs/dynerf_flame_steak/av1_qp50 --codec av1 --qp 50
+
+# python eval_plane_video_compress.py \
+#     --startframe 0 --numframe 20 --packing_mode flatten \
+#     --qmode global --gop 20 --pix-fmt yuv444p \
+#     --segment-root logs/dynerf_flame_steak/av1_qp56 --codec av1 --qp 56
+
+# python eval_plane_video_compress.py \
+#     --startframe 0 --numframe 20 --packing_mode flatten \
+#     --qmode global --gop 20 --pix-fmt yuv444p \
+#     --segment-root logs/dynerf_flame_steak/av1_qp62 --codec av1 --qp 62
 
 
 # python eval_plane_video_compress.py \
@@ -80,30 +95,45 @@ python eval_plane_video_compress.py \
 
 #########################################################################################
 
-python eval_plane_video_compress.py \
-    --startframe 0 --numframe 20 --packing_mode flatten \
-    --qmode global --gop 20 --pix-fmt yuv444p \
-    --segment-root logs/dynerf_flame_steak/flame_steak_video_ds3 --codec av1 --qp 20
+# python eval_plane_video_compress.py \
+#     --startframe 0 --numframe 20 --packing_mode flatten \
+#     --qmode global --gop 20 --pix-fmt yuv444p \
+#     --segment-root logs/dynerf_flame_steak/flame_steak_video_ds3 --codec av1 --qp 20
+
+# python eval_plane_video_compress.py \
+#     --startframe 0 --numframe 20 --packing_mode flatten \
+#     --qmode global --gop 20 --pix-fmt yuv444p \
+#     --segment-root logs/dynerf_flame_steak/flame_steak_video_ds3 --codec av1 --qp 26
+
+# python eval_plane_video_compress.py \
+#     --startframe 0 --numframe 20 --packing_mode flatten \
+#     --qmode global --gop 20 --pix-fmt yuv444p \
+#     --segment-root logs/dynerf_flame_steak/flame_steak_video_ds3 --codec av1 --qp 32
+
+# python eval_plane_video_compress.py \
+#     --startframe 0 --numframe 20 --packing_mode flatten \
+#     --qmode global --gop 20 --pix-fmt yuv444p \
+#     --segment-root logs/dynerf_flame_steak/flame_steak_video_ds3 --codec av1 --qp 38
+
+# python eval_plane_video_compress.py \
+#     --startframe 0 --numframe 20 --packing_mode flatten \
+#     --qmode global --gop 20 --pix-fmt yuv444p \
+#     --segment-root logs/dynerf_flame_steak/flame_steak_video_ds3 --codec av1 --qp 44
 
 python eval_plane_video_compress.py \
     --startframe 0 --numframe 20 --packing_mode flatten \
     --qmode global --gop 20 --pix-fmt yuv444p \
-    --segment-root logs/dynerf_flame_steak/flame_steak_video_ds3 --codec av1 --qp 26
+    --segment-root logs/dynerf_flame_steak/flame_steak_video_ds3 --codec av1 --qp 50
 
 python eval_plane_video_compress.py \
     --startframe 0 --numframe 20 --packing_mode flatten \
     --qmode global --gop 20 --pix-fmt yuv444p \
-    --segment-root logs/dynerf_flame_steak/flame_steak_video_ds3 --codec av1 --qp 32
+    --segment-root logs/dynerf_flame_steak/flame_steak_video_ds3 --codec av1 --qp 56
 
 python eval_plane_video_compress.py \
     --startframe 0 --numframe 20 --packing_mode flatten \
     --qmode global --gop 20 --pix-fmt yuv444p \
-    --segment-root logs/dynerf_flame_steak/flame_steak_video_ds3 --codec av1 --qp 38
-
-python eval_plane_video_compress.py \
-    --startframe 0 --numframe 20 --packing_mode flatten \
-    --qmode global --gop 20 --pix-fmt yuv444p \
-    --segment-root logs/dynerf_flame_steak/flame_steak_video_ds3 --codec av1 --qp 44
+    --segment-root logs/dynerf_flame_steak/flame_steak_video_ds3 --codec av1 --qp 62
 
 
 # python eval_plane_video_compress.py \

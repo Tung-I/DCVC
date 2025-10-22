@@ -22,25 +22,6 @@ import time
 
 """
 Usage:
-    python render.py --config  configs/dynerf_sear_steak/image_l.py --frame_ids 0 --render_test
-        --frame_ids 0 1 2 3 4 5 6 7 8 9 --render_test \
-        --ckpt_dir logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_crf28_g10_yuv444p
-    python render.py --config  configs/dynerf_flame_steak/image.py \
-        --render_test --frame_ids 0 \
-        --ckpt_dir logs/dynerf_flame_steak/flame_steak_image/planeimg_00_00_flatten_global_jpeg_qp20
-    python render.py --config  configs/blender_lego/image.py  \
-        --render_test --frame_ids 0 \
-        --ckpt_dir logs/nerf_synthetic/lego_image
-    python render.py --config  configs/blender_lego/image.py  \
-        --render_test --frame_ids 0 \
-        --ckpt_dir logs/nerf_synthetic/lego_image/planeimg_00_00_flatten_flatten_global_jpeg_qp20
-    python render.py --config  configs/blender_lego/image.py  \
-        --render_test --frame_ids 0 \
-        --ckpt_dir logs/nerf_synthetic/dcvc_qp24_flatten_flatten/dcvc_qp24
-    python render.py --render_test --frame_ids 0 5 10 15 19 \
-        --config configs/dynerf_flame_steak/av1_qp20.py  \
-        --ckpt_dir logs/dynerf_flame_steak/av1_qp20/compressed_av1_qp20_g20_yuv444p
-
     python render.py --render_train --frame_ids 0 5 10 15 19 \
         --config configs/NHR/sport1.py  \
         --ckpt_dir logs/NHR/sport1
@@ -116,54 +97,68 @@ def load_everything(args, cfg):
 def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
                       gt_imgs=None, savedir=None, dump_images=False,
                       render_factor=0, render_video_flipy=False, render_video_rot90=0,
-                      eval_ssim=False, eval_lpips_alex=False, eval_lpips_vgg=False,frame_id = 0, masks = None):
-    '''Run evaluation if gt given.
-    '''
+                      eval_ssim=False, eval_lpips_alex=False, eval_lpips_vgg=False, frame_id=0, masks=None):
+
     assert len(render_poses) == len(HW) and len(HW) == len(Ks)
 
-    if render_factor!=0:
+    if render_factor != 0:
         HW = np.copy(HW)
         Ks = np.copy(Ks)
-        HW = (HW/render_factor).astype(int)
+        HW = (HW / render_factor).astype(int)
         Ks[:, :2, :3] /= render_factor
 
-    rgbs = []
-    depths = []
-    bgmaps = []
-    psnrs = []
-    ssims = []
-    lpips_alex = []
-    lpips_vgg = []
+    # ---- NEW: make sure these kwargs match training/eval path
+    rk = dict(render_kwargs)  # shallow copy
+    rk.setdefault('rand_bkgd', False)   # training eval used rand_bkgd=False
+    rk.setdefault('inverse_y', render_kwargs.get('inverse_y', False))
+    rk.setdefault('flip_x', render_kwargs.get('flip_x', False))
+    rk.setdefault('flip_y', render_kwargs.get('flip_y', False))
 
-    curf = frame_id % len(render_poses) 
+    # get model device safely
+    try:
+        device = next(model.parameters()).device
+    except StopIteration:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+    rgbs, depths, bgmaps, psnrs, ssims, lpips_alex, lpips_vgg = [], [], [], [], [], [], []
 
     for i, c2w in enumerate(tqdm(render_poses)):
-        # if i != curf and ndc:
-        #     continue
-        H, W = HW[i]
-        K = Ks[i]
-        c2w = torch.Tensor(c2w)
-        rays_o, rays_d, viewdirs = dvgo.get_rays_of_a_view(
-                H, W, K, c2w, ndc, inverse_y=render_kwargs['inverse_y'],
-                flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
-        keys = ['rgb_marched', 'depth', 'alphainv_last']
-        rays_o = rays_o.flatten(0,-2)
-        rays_d = rays_d.flatten(0,-2)
-        viewdirs = viewdirs.flatten(0,-2)
-        with torch.no_grad():
-            render_result_chunks = [
-                {k: v for k, v in model(ro, rd, vd, **render_kwargs).items() if k in keys}
-                for ro, rd, vd in zip(rays_o.split(150480, 0), rays_d.split(150480, 0), viewdirs.split(150480, 0))
-            ]
-            render_result = {
-                k: torch.cat([ret[k] for ret in render_result_chunks]).reshape(H,W,-1)
-                for k in render_result_chunks[0].keys()
-            }
+        H, W = int(HW[i][0]), int(HW[i][1])
+        K_t  = torch.tensor(Ks[i], dtype=torch.float32, device=device)       # <-- to device
+        c2w_t= torch.tensor(c2w,   dtype=torch.float32, device=device)       # <-- to device
 
-        
-        rgb = render_result['rgb_marched'].cpu().numpy()
-        depth = render_result['depth'].cpu().numpy()
-        bgmap = render_result['alphainv_last'].cpu().numpy()
+        rays_o, rays_d, viewdirs = dvgo.get_rays_of_a_view(
+            H, W, K_t, c2w_t, ndc,
+            inverse_y=rk['inverse_y'],
+            flip_x=rk['flip_x'], flip_y=rk['flip_y']
+        )
+        rays_o = rays_o.flatten(0, -2)
+        rays_d = rays_d.flatten(0, -2)
+        viewdirs = viewdirs.flatten(0, -2)
+
+        # ---- NEW: pass mode='feat' (matches training) and, if available, frame_ids
+        chunk = 150480
+        keys = ['rgb_marched', 'depth', 'alphainv_last']
+        fid_chunk = torch.full((chunk,), int(frame_id), device=device, dtype=torch.long)
+
+        outs = []
+        s = 0
+        while s < rays_o.shape[0]:
+            e = min(s + chunk, rays_o.shape[0])
+            try:
+                ret = model(rays_o[s:e], rays_d[s:e], viewdirs[s:e],
+                            frame_ids=fid_chunk[:e - s], mode='feat', **rk)
+            except TypeError:
+                # single-frame dvgo does not take frame_ids
+                ret = model(rays_o[s:e], rays_d[s:e], viewdirs[s:e],
+                            mode='feat', **rk)
+            outs.append({k: ret[k] for k in keys})
+            s = e
+
+        render_result = {k: torch.cat([o[k] for o in outs], dim=0).reshape(H, W, -1) for k in keys}
+        rgb   = render_result['rgb_marched'].clamp(0, 1).detach().cpu().numpy()
+        depth = render_result['depth'].detach().cpu().numpy()
+        bgmap = render_result['alphainv_last'].detach().cpu().numpy()
 
         rgbs.append(rgb)
         depths.append(depth)
@@ -304,6 +299,21 @@ if __name__=='__main__':
         print('load rgbnet:', rgbnet_file )
 
         stepsize = cfg.fine_model_and_render.stepsize
+        # render_viewpoints_kwargs = {
+        #     'model': model,
+        #     'ndc': cfg.data.ndc,
+        #     'render_kwargs': {
+        #         'near': data_dict['near'],
+        #         'far': data_dict['far'],
+        #         'bg': 1 if cfg.data.white_bkgd else 0,
+        #         'stepsize': stepsize,
+        #         'inverse_y': cfg.data.inverse_y,
+        #         'flip_x': cfg.data.flip_x,
+        #         'flip_y': cfg.data.flip_y,
+        #         'render_depth': True,
+        #         'shared_rgbnet': rgbnet,
+        #     },
+        # }
         render_viewpoints_kwargs = {
             'model': model,
             'ndc': cfg.data.ndc,
@@ -317,6 +327,8 @@ if __name__=='__main__':
                 'flip_y': cfg.data.flip_y,
                 'render_depth': True,
                 'shared_rgbnet': rgbnet,
+                # NEW ↓ to mirror trainer eval
+                'rand_bkgd': False,
             },
         }
 
@@ -331,7 +343,7 @@ if __name__=='__main__':
             print('All results are dumped into', testsavedir)
             i_train = data_dict['i_train']
             frame_ids = data_dict['frame_ids']
-            id_mask = (frame_ids==frame_id)[i_train]
+            id_mask = (frame_ids == frame_id)[i_train].numpy() 
             t_train = np.array(i_train)[id_mask]
             rgbs, depths, bgmaps,res_psnr = render_viewpoints(
                     render_poses=data_dict['poses'][t_train],
@@ -364,28 +376,6 @@ if __name__=='__main__':
                     savedir=testsavedir, dump_images=args.dump_images,
                     eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
                     frame_id = frame_id, masks = None,
-                    **render_viewpoints_kwargs)
-
-        # render video
-        if args.render_video:
-            testsavedir = os.path.join(cfg.basedir, cfg.expname, f'render_video')
-            os.makedirs(testsavedir, exist_ok=True)
-            print('All results are dumped into', testsavedir)
-
-            i_test = data_dict['i_test']
-            frame_ids = data_dict['frame_ids']
-            id_mask = (frame_ids==frame_id)[i_test].numpy()
-            t_test = np.array(i_test)[id_mask]
-            t_render_poses = data_dict['render_poses']
-
-            rgbs, depths, bgmaps, res_psnr = render_viewpoints(
-                    render_poses=t_render_poses,
-                    HW=data_dict['HW'][t_test][[0]].repeat(len(t_render_poses), 0),
-                    Ks=data_dict['Ks'][t_test][[0]].repeat(len(t_render_poses), 0),
-                    render_factor=args.render_video_factor,
-                    render_video_flipy=args.render_video_flipy,
-                    render_video_rot90=args.render_video_rot90,
-                    savedir=testsavedir, dump_images=args.dump_images, frame_id = frame_id,
                     **render_viewpoints_kwargs)
 
 

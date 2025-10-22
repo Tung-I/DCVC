@@ -3,7 +3,10 @@ import os
 import json
 
 # path to the scene folder of NHR dataset
-root_path = '/work/pi_rsitaram_umass_edu/tungi/datasets/NHR/sport_1'
+# root_path = '/work/pi_rsitaram_umass_edu/tungi/datasets/NHR/sport_1'
+# root_path = '/work/pi_rsitaram_umass_edu/tungi/datasets/NHR/sport_2'
+root_path = '/work/pi_rsitaram_umass_edu/tungi/datasets/NHR/sport_3'
+# root_path = '/work/pi_rsitaram_umass_edu/tungi/datasets/NHR/basketball'
 # number of cameras.  56 for NHR dataset
 N_cam = 56  
 # number of frames.  56 for NHR dataset

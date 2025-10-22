@@ -254,44 +254,45 @@ def load_data(args, split="train"):
             frame_ids=frame_ids, masks=masks,
         )
 
-    elif args.dataset_type == 'NHR':
-        args.frame_ids.sort()
-        frame_id = args.frame_ids[-1]
-        previous_frame_ids = args.frame_ids[:-1]
-        tar_size = (args.height, args.width)
-        isNHR = (args.width <= 960)
+    # elif args.dataset_type == 'NHR':
+    #     args.frame_ids.sort()
+    #     frame_id = args.frame_ids[-1]
+    #     previous_frame_ids = args.frame_ids[:-1]
+    #     tar_size = (args.height, args.width)
+    #     isNHR = (args.width <= 960)
 
-        dataset = NHR_Dataset(
-            args.datadir,
-            frameids=args.frame_ids,
-            test_views=args.test_frames,
-            tar_size=tar_size,
-            isNHR=isNHR
-        )
+    #     dataset = NHR_Dataset(
+    #         args.datadir,
+    #         frameids=args.frame_ids,
+    #         test_views=args.test_frames,
+    #         tar_size=tar_size,
+    #         isNHR=isNHR
+    #     )
 
-        # >>> Use the dataset's own loader (already patched to be frame-safe) <<<
-        images, poses, render_poses, hwf, K, i_split, frame_ids = dataset.load_data(
-            current_id=frame_id, previous_ids=previous_frame_ids, scale=1.0
-        )
-        print('Loaded NHR', images.shape, render_poses.shape, hwf, args.datadir,
-            ' frame:', frame_id, ' previous:', previous_frame_ids)
+    #     # >>> Use the dataset's own loader (already patched to be frame-safe) <<<
+    #     images, poses, render_poses, hwf, K, i_split, frame_ids = dataset.load_data(
+    #         current_id=frame_id, previous_ids=previous_frame_ids, scale=1.0
+    #     )
+    #     print('Loaded NHR', images.shape, render_poses.shape, hwf, args.datadir,
+    #         ' frame:', frame_id, ' previous:', previous_frame_ids)
 
-        i_train, i_val, i_test, i_replay, i_current = i_split
-        print('@@@@@@ training:', len(i_train), 'test:', len(i_test))
+    #     i_train, i_val, i_test, i_replay, i_current = i_split
+    #     print('@@@@@@ training:', len(i_train), 'test:', len(i_test))
 
-        # Near/far from current-frame camera centers
-        near, far = inward_nearfar_heuristic(poses[i_current, :3, 3])
-        near = near * 1.1
-        far  = far  * 1.6
+    #     # Near/far from current-frame camera centers
+    #     near, far = inward_nearfar_heuristic(poses[i_current, :3, 3])
+    #     near = near * 1.1
+    #     far  = far  * 1.6
 
-        # masks & alpha handling (same as before)
-        assert images.shape[-1] in (3, 4)
-        masks = images[..., -1:]
-        if images.shape[-1] == 4:
-            if args.white_bkgd:
-                images = images[..., :3] * masks + (1. - masks)
-            else:
-                images = images[..., :3]
+    #     # masks & alpha handling (same as before)
+    #     assert images.shape[-1] in (3, 4)
+    #     masks = images[..., -1:]
+    #     if images.shape[-1] == 4:
+    #         if args.white_bkgd:
+    #             images = images[..., :3] * masks + (1. - masks)
+    #         else:
+    #             images = images[..., :3]
+
 
     else:
         raise NotImplementedError(f'Unknown dataset type {args.dataset_type} exiting')
