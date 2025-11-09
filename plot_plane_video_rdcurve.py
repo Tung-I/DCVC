@@ -8,50 +8,50 @@ import matplotlib.pyplot as plt
 # ==============================
 # Your sets (explicit mapping)
 # ==============================
-# set_vp9: Dict[str, str] = {
-#     'qp28': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_vp9_qp28_g20_yuv444p',
-#     'qp32': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_vp9_qp32_g20_yuv444p',
-#     'qp36': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_vp9_qp36_g20_yuv444p',
-#     'qp40': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_vp9_qp40_g20_yuv444p',
-#     'qp44': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_vp9_qp44_g20_yuv444p',
-# }
-# set_hevc: Dict[str, str] = {
-#     'qp28': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_qp28_g20_yuv444p',
-#     'qp32': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_qp32_g20_yuv444p',
-#     'qp36': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_qp36_g20_yuv444p',
-#     'qp40': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_qp40_g20_yuv444p',
-#     'qp44': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_qp44_g20_yuv444p',
-# }
-# set_av1: Dict[str, str] = {
-#     'qp62': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp62_g20_yuv444p',
-#     'qp56': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp56_g20_yuv444p',
-#     'qp50': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp50_g20_yuv444p',
-#     'qp44': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp44_g20_yuv444p',
-#     'qp38': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp38_g20_yuv444p',
-#     # 'qp32': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp32_g20_yuv444p',
-#     # 'qp26': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp26_g20_yuv444p',
-#     # 'qp20': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp20_g20_yuv444p',
-# }
+set_vp9: Dict[str, str] = {
+    'qp28': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_vp9_qp28_g20_yuv444p',
+    'qp32': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_vp9_qp32_g20_yuv444p',
+    'qp36': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_vp9_qp36_g20_yuv444p',
+    'qp40': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_vp9_qp40_g20_yuv444p',
+    'qp44': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_vp9_qp44_g20_yuv444p',
+}
+set_hevc: Dict[str, str] = {
+    'qp28': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_qp28_g20_yuv444p',
+    'qp32': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_qp32_g20_yuv444p',
+    'qp36': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_qp36_g20_yuv444p',
+    'qp40': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_qp40_g20_yuv444p',
+    'qp44': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_hevc_qp44_g20_yuv444p',
+}
+set_av1: Dict[str, str] = {
+    'qp62': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp62_g20_yuv444p',
+    'qp56': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp56_g20_yuv444p',
+    'qp50': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp50_g20_yuv444p',
+    'qp44': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp44_g20_yuv444p',
+    'qp38': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp38_g20_yuv444p',
+    # 'qp32': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp32_g20_yuv444p',
+    # 'qp26': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp26_g20_yuv444p',
+    # 'qp20': 'logs/dynerf_flame_steak/flame_steak_video_ds3/compressed_av1_qp20_g20_yuv444p',
+}
 set_vp9_ours: Dict[str, str] = {
-    # 'qp28': 'logs/dynerf_flame_steak/vp9_qp28/compressed_vp9_qp28_g20_yuv444p',
+    'qp28': 'logs/dynerf_flame_steak/vp9_qp28/compressed_vp9_qp28_g20_yuv444p',
     'qp32': 'logs/dynerf_flame_steak/vp9_qp32/compressed_vp9_qp32_g20_yuv444p',
     'qp36': 'logs/dynerf_flame_steak/vp9_qp36/compressed_vp9_qp36_g20_yuv444p',
     'qp40': 'logs/dynerf_flame_steak/vp9_qp40/compressed_vp9_qp40_g20_yuv444p',
     'qp44': 'logs/dynerf_flame_steak/vp9_qp44/compressed_vp9_qp44_g20_yuv444p',
 }
-# set_hevc_ours: Dict[str, str] = {
-#     # 'qp28': 'logs/dynerf_flame_steak/hevc_qp28/compressed_hevc_qp28_g20_yuv444p',
-#     'qp32': 'logs/dynerf_flame_steak/hevc_qp32/compressed_hevc_qp32_g20_yuv444p',
-#     'qp36': 'logs/dynerf_flame_steak/hevc_qp36/compressed_hevc_qp36_g20_yuv444p',
-#     'qp40': 'logs/dynerf_flame_steak/hevc_qp40/compressed_hevc_qp40_g20_yuv444p',
-#     'qp44': 'logs/dynerf_flame_steak/hevc_qp44/compressed_hevc_qp44_g20_yuv444p',
-# }
+set_hevc_ours: Dict[str, str] = {
+    'qp28': 'logs/dynerf_flame_steak/hevc_qp28/compressed_hevc_qp28_g20_yuv444p',
+    'qp32': 'logs/dynerf_flame_steak/hevc_qp32/compressed_hevc_qp32_g20_yuv444p',
+    'qp36': 'logs/dynerf_flame_steak/hevc_qp36/compressed_hevc_qp36_g20_yuv444p',
+    'qp40': 'logs/dynerf_flame_steak/hevc_qp40/compressed_hevc_qp40_g20_yuv444p',
+    'qp44': 'logs/dynerf_flame_steak/hevc_qp44/compressed_hevc_qp44_g20_yuv444p',
+}
 set_av1_ours: Dict[str, str] = {
     'qp62': 'logs/dynerf_flame_steak/av1_qp62/compressed_av1_qp62_g20_yuv444p',
     'qp56': 'logs/dynerf_flame_steak/av1_qp56/compressed_av1_qp56_g20_yuv444p',
     'qp50': 'logs/dynerf_flame_steak/av1_qp50/compressed_av1_qp50_g20_yuv444p',
     'qp44': 'logs/dynerf_flame_steak/av1_qp44/compressed_av1_qp44_g20_yuv444p',
-    # 'qp38': 'logs/dynerf_flame_steak/av1_qp38/compressed_av1_qp38_g20_yuv444p',
+    'qp38': 'logs/dynerf_flame_steak/av1_qp38/compressed_av1_qp38_g20_yuv444p',
     # 'qp32': 'logs/dynerf_flame_steak/av1_qp32/compressed_av1_qp32_g20_yuv444p',
     # 'qp26': 'logs/dynerf_flame_steak/av1_qp26/compressed_av1_qp26_g20_yuv444p',
     # 'qp20': 'logs/dynerf_flame_steak/av1_qp20/compressed_av1_qp20_g20_yuv444p',
@@ -153,35 +153,35 @@ def _parse_qp(text: str, rx: Optional[str]) -> Optional[int]:
 # Curve specs
 # ==============================
 CURVES: List[Dict[str, Any]] = [
-    # {
-    #     "name": "TeTriRF-VP9",
-    #     "enabled": True,
-    #     "kind": "mapping",
-    #     "paths": set_vp9,  # label -> folder
-    #     "level_regex": r".*?qp(\d+)",          # QP, not CRF
-    #     "bits": {"type": "encoded_bits_total", "path": "encoded_bits.txt"},
-    #     "metrics": {"dir": "render_test"},     # read psnr/ssim/lpips from here
-    # },
-    # {
-    #     "name": "TeTriRF-HEVC",
-    #     "enabled": True,
-    #     "kind": "mapping",
-    #     "paths": set_hevc,
-    #     "level_regex": r".*?qp(\d+)",
-    #     "bits": {"type": "encoded_bits_total", "path": "encoded_bits.txt"},
-    #     "metrics": {"dir": "render_test"},
-    # },
-    # {
-    #     "name": "TeTriRF-AV1",
-    #     "enabled": True,
-    #     "kind": "mapping",
-    #     "paths": set_av1,
-    #     "level_regex": r".*?qp(\d+)",
-    #     "bits": {"type": "encoded_bits_total", "path": "encoded_bits.txt"},
-    #     "metrics": {"dir": "render_test"},
-    # },
     {
-        "name": "Ours-VP9",
+        "name": "TeTriRF-VP9",
+        "enabled": True,
+        "kind": "mapping",
+        "paths": set_vp9,  # label -> folder
+        "level_regex": r".*?qp(\d+)",          # QP, not CRF
+        "bits": {"type": "encoded_bits_total", "path": "encoded_bits.txt"},
+        "metrics": {"dir": "render_test"},     # read psnr/ssim/lpips from here
+    },
+    {
+        "name": "TeTriRF-HEVC",
+        "enabled": True,
+        "kind": "mapping",
+        "paths": set_hevc,
+        "level_regex": r".*?qp(\d+)",
+        "bits": {"type": "encoded_bits_total", "path": "encoded_bits.txt"},
+        "metrics": {"dir": "render_test"},
+    },
+    {
+        "name": "TeTriRF-AV1",
+        "enabled": True,
+        "kind": "mapping",
+        "paths": set_av1,
+        "level_regex": r".*?qp(\d+)",
+        "bits": {"type": "encoded_bits_total", "path": "encoded_bits.txt"},
+        "metrics": {"dir": "render_test"},
+    },
+    {
+        "name": "CatRF-VP9",
         "enabled": True,
         "kind": "mapping",
         "paths": set_vp9_ours,
@@ -189,17 +189,17 @@ CURVES: List[Dict[str, Any]] = [
         "bits": {"type": "encoded_bits_total", "path": "encoded_bits.txt"},
         "metrics": {"dir": "render_test"},
     },
-    # {
-    #     "name": "Ours-HEVC",
-    #     "enabled": True,
-    #     "kind": "mapping",
-    #     "paths": set_hevc_ours,
-    #     "level_regex": r".*?qp(\d+)",
-    #     "bits": {"type": "encoded_bits_total", "path": "encoded_bits.txt"},
-    #     "metrics": {"dir": "render_test"},
-    # },
     {
-        "name": "Ours-AV1",
+        "name": "CatRF-HEVC",
+        "enabled": True,
+        "kind": "mapping",
+        "paths": set_hevc_ours,
+        "level_regex": r".*?qp(\d+)",
+        "bits": {"type": "encoded_bits_total", "path": "encoded_bits.txt"},
+        "metrics": {"dir": "render_test"},
+    },
+    {
+        "name": "CatRF-AV1",
         "enabled": True,
         "kind": "mapping",
         "paths": set_av1_ours,
@@ -288,12 +288,12 @@ def parse_args():
     ap.add_argument("--marker_tetrirf",  default="o", help="Marker for 'TeTriRF-*' curves")
 
     # Axis ranges (per subplot)
-    ap.add_argument("--xlim_psnr",  default="0,8", help="xmin,xmax for PSNR subplot")
-    ap.add_argument("--ylim_psnr",  default="22,32", help="ymin,ymax for PSNR subplot")
-    ap.add_argument("--xlim_ssim",  default="0,8", help="xmin,xmax for SSIM subplot")
+    ap.add_argument("--xlim_psnr",  default="0,7", help="xmin,xmax for PSNR subplot")
+    ap.add_argument("--ylim_psnr",  default="23,32", help="ymin,ymax for PSNR subplot")
+    ap.add_argument("--xlim_ssim",  default="0,7", help="xmin,xmax for SSIM subplot")
     ap.add_argument("--ylim_ssim",  default="0.7,0.93", help="ymin,ymax for SSIM subplot")
-    ap.add_argument("--xlim_lpips", default="0,8", help="xmin,xmax for LPIPS subplot")
-    ap.add_argument("--ylim_lpips", default="0.2,0.55", help="ymin,ymax for LPIPS subplot")
+    ap.add_argument("--xlim_lpips", default="0,7", help="xmin,xmax for LPIPS subplot")
+    ap.add_argument("--ylim_lpips", default="0.24,0.53", help="ymin,ymax for LPIPS subplot")
     return ap.parse_args()
 
 def method_and_codec_from_name(curve_name: str) -> Tuple[str, str]:
@@ -315,7 +315,7 @@ def color_for_codec(codec: str, args) -> str:
 
 def marker_for_method(method: str, args) -> str:
     m = method.lower()
-    if m.startswith("ours"):
+    if m.startswith("catrf"):
         return args.marker_ours
     if m.startswith("tetrirf"):
         return args.marker_tetrirf
@@ -349,6 +349,7 @@ def main():
 
     # Resolve output
     out_path = os.path.join(args.root_dir, "rd_curve.png")
+    pdf_out_path = os.path.join(args.root_dir, "rd_curve.pdf")
     os.makedirs(args.root_dir, exist_ok=True)
 
     # ---- Plot: 3 subplots (PSNR / SSIM / LPIPS) ----
@@ -399,12 +400,13 @@ def main():
 
     # Axis labels & titles
     for ax in axes:
-        ax.set_xlabel("Bitrate (Mbit/s)", fontsize=12)
+        ax.set_xlabel("Bitrate (Mbit/s)", fontsize=14)
         ax.grid(True, linestyle="--", linewidth=0.6, alpha=0.65)
+        ax.tick_params(axis='both', labelsize=14)
 
-    ax_psnr.set_ylabel("PSNR (dB)", fontsize=12)
-    ax_ssim.set_ylabel("SSIM", fontsize=12)
-    ax_lpips.set_ylabel("LPIPS", fontsize=12)
+    ax_psnr.set_ylabel("PSNR (dB)", fontsize=14)
+    ax_ssim.set_ylabel("SSIM", fontsize=14)
+    ax_lpips.set_ylabel("LPIPS", fontsize=14)
 
     # ax_psnr.set_title("PSNR", fontsize=12)
     # ax_ssim.set_title("SSIM", fontsize=12)
@@ -428,7 +430,7 @@ def main():
 
     # Single legend across subplots (top)
     ncol = min(len(legend_labels), 6)
-    fig.legend(legend_handles, legend_labels, loc="upper center", ncol=ncol, frameon=False, bbox_to_anchor=(0.5, 0.98))
+    fig.legend(legend_handles, legend_labels, loc="upper center", fontsize=14, ncol=ncol, frameon=False, bbox_to_anchor=(0.5, 0.98))
 
     # Super title + layout
     # fig.suptitle(args.title, y=0.92, fontsize=14)
@@ -436,6 +438,7 @@ def main():
 
     # Save
     plt.savefig(out_path, dpi=220)
+    plt.savefig(pdf_out_path)
     plt.close()
     print(f"[DONE] Saved RD plot: {out_path}")
 

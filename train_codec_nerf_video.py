@@ -28,6 +28,9 @@ WANDB=True
 Usage:
     python train_codec_nerf_video.py --config configs/dynerf_flame_steak/dcvc_qp48.py --frame_ids 0 1 2 3 4 5 6 7 8 9
     python train_codec_nerf_video.py --config configs/dynerf_flame_steak/av1_qp20.py --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 
+    python train_codec_nerf_video.py --config configs/dynerf_flame_steak/av1_qp44_mosaic_affine_tv.py --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19
+    python train_codec_nerf_video.py --config configs/dynerf_flame_steak/hevc_qp36_flatten_affine.py --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19
+    python train_codec_nerf_video.py --config configs/dynerf_flame_steak/av1_qp52_k16.py --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19
 """
 
 def build_arg_parser() -> argparse.ArgumentParser:

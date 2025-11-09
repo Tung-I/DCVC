@@ -41,12 +41,6 @@ from TeTriRF.lib.unet import SmallUNet, create_mlp, BoundedProjector, LinearPack
 class VideoCodecWrapper(nn.Module):
     """
     Unified video codec wrapper (HEVC / AV1 / VP9) using PyAV in **QP mode**.
-      CUDA: normalize/pack/pad
-      CPU : encode/decode (in-memory)
-      CUDA: crop/unpack/denorm (+ metrics)
-
-    Optimization: if packing_mode == "flatten", we encode **grayscale** (1-plane) instead
-    of three duplicated channels to reduce bitrate.
     """
     def __init__(self, cfg_codec, device="cuda"):
         super().__init__()
@@ -54,8 +48,21 @@ class VideoCodecWrapper(nn.Module):
         self.in_channels  = int(cfg_codec.in_channels)
         self.packing_mode = cfg_codec.packing_mode
         self.align        = int(getattr(cfg_codec, "align", 32))
-        self.quant_mode   = cfg_codec.quant_mode
+        # self.quant_mode   = cfg_codec.quant_mode
+        self.quant_mode = str(getattr(cfg_codec, "quant_mode", "global")).lower()
+        if self.quant_mode == "global":
+            self.quant_mode = "absmax"
         self.global_range = tuple(cfg_codec.global_range)
+
+        # Absolute-max (hardcoded) range for appearance plane
+        # NOTE: this ignores cfg_codec.global_range to exactly match your current behavior.
+        self.absmax_lo = float(getattr(cfg_codec, "absmax_lo", -20.0))
+        self.absmax_hi = float(getattr(cfg_codec, "absmax_hi",  20.0))
+
+        # Affine (per-channel percentiles) — robust stats so it won't blow up
+        self.affine_lo_p = float(getattr(cfg_codec, "affine_lo_p", 0.5))    # 0.5th percentile
+        self.affine_hi_p = float(getattr(cfg_codec, "affine_hi_p", 99.5))   # 99.5th percentile
+        self.affine_eps  = float(getattr(cfg_codec, "affine_eps", 1e-6))    # min scale
 
         # Backend choice
         name = str(cfg_codec.name).lower()
@@ -106,14 +113,45 @@ class VideoCodecWrapper(nn.Module):
         """
         assert frames.dim() == 4 and frames.shape[1] == self.in_channels
         in_dev = frames.device
-        T, C, H, W = frames.shape
-
-        # Normalize to [0,1], pack, pad
         x = frames.to(dtype=torch.float32, device=in_dev, non_blocking=True)
-        if self.quant_mode != "global":
-            raise NotImplementedError("Only 'global' quant_mode supported.")
-        scale = (self.global_range[1] - self.global_range[0])
-        x01   = (x - self.global_range[0]) / scale
+        T, C, H, W = x.shape
+
+        if self.quant_mode == "absmax":
+            # Absolute max quantization: EXACTLY your previous global mode but hardwired to [-20, 20]
+            lo = torch.tensor(self.absmax_lo, device=in_dev, dtype=torch.float32)
+            hi = torch.tensor(self.absmax_hi, device=in_dev, dtype=torch.float32)
+            scale = hi - lo
+            x01 = (x - lo) / scale
+            # keep for dequant later
+            deq_lo = lo
+            deq_scale = scale
+            peak_for_psnr = float(scale.item())
+
+        elif self.quant_mode == "affine":
+            # Per-channel robust affine quantization from percentiles over {T,H,W}
+            # Shape helpers
+            x_flat = x.permute(1, 0, 2, 3).contiguous().view(C, -1)  # [C, T*H*W]
+
+            q_lo = torch.quantile(x_flat, q=self.affine_lo_p / 100.0, dim=1)
+            q_hi = torch.quantile(x_flat, q=self.affine_hi_p / 100.0, dim=1)
+
+            # guard against degenerate ranges
+            scale_ch = (q_hi - q_lo).clamp_min(self.affine_eps)      # [C]
+            lo_ch    = q_lo                                           # [C]
+
+            # Broadcast to [1,C,1,1]
+            deq_lo    = lo_ch.view(1, C, 1, 1)
+            deq_scale = scale_ch.view(1, C, 1, 1)
+
+            x01 = (x - deq_lo) / deq_scale
+            x01 = x01.clamp_(0.0, 1.0)  # keep strictly in-range for codec
+
+            # Peak for PSNR: use the maximum per-channel dynamic range
+            peak_for_psnr = float(scale_ch.max().item())
+
+        else:
+            raise NotImplementedError(f"Unknown quant_mode '{self.quant_mode}' for appearance planes.")
+                
         canv_pad, orig_size = pack_planes_to_rgb(x01, align=self.align, mode=self.packing_mode)  # [T,3,Hp,Wp]
         H2, W2 = orig_size
         Hp, Wp = canv_pad.shape[-2:]
@@ -164,12 +202,15 @@ class VideoCodecWrapper(nn.Module):
         # Back to CUDA: crop, unpack, de-normalize, metrics
         rec_canv = rec_canv_cpu.to(in_dev, non_blocking=True)[..., :H2, :W2]    # [T,3,H2,W2]
         rec01    = unpack_rgb_to_planes(rec_canv, C, (H2, W2), mode=self.packing_mode)  # [T,C,H,W]
-        recon    = (rec01 * scale + self.global_range[0]).to(torch.float32)
+        
+        # De-normalize (supports scalar or per-channel broadcasting)
+        recon = (rec01 * deq_scale + deq_lo).to(torch.float32)
 
         bpp_val = float(self._last_bits) / float(T * Hp * Wp)
         bpp     = torch.tensor(bpp_val, device=in_dev, dtype=torch.float32)
-        peak    = float(scale)
-        psnr    = tetrirf_utils.mse2psnr_with_peak(F.mse_loss(recon, x), peak=peak)
+
+        # PSNR with the effective peak
+        psnr = tetrirf_utils.mse2psnr_with_peak(F.mse_loss(recon, x), peak=peak_for_psnr)
 
         return recon, bpp, psnr
 

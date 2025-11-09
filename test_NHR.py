@@ -13,7 +13,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from TeTriRF.lib import utils, dvgo,  dmpigo
-from TeTriRF.lib.load_data import load_data
+
 from TeTriRF.lib.dvgo_video import RGB_Net, RGB_SH_Net
 
 from torch_efficient_distloss import flatten_eff_distloss
@@ -22,9 +22,13 @@ import time
 
 """
 Usage:
-    python render.py --render_train --frame_ids 0 5 10 15 19 \
+    python test_NHR.py --render_test --frame_ids 0 \
         --config configs/NHR/sport1.py  \
         --ckpt_dir logs/NHR/sport1
+
+    python test_NHR.py --render_test --frame_ids 0 4 \
+        --config configs/NHR/sport2.py  \
+        --ckpt_dir logs/NHR/sport2
 """
 
 def config_parser():
@@ -75,6 +79,10 @@ def seed_everything():
 def load_everything(args, cfg):
     '''Load images / poses / camera settings / data split.
     '''
+    if cfg.data.dataset_type == 'NHR':
+        from TeTriRF.lib.load_data_NHR import load_data
+    else:
+        from TeTriRF.lib.load_data import load_data
     data_dict = load_data(cfg.data)
 
     # remove useless field
@@ -263,6 +271,7 @@ if __name__=='__main__':
         ckpt_path = os.path.join(args.ckpt_dir, f"fine_last_{frame_id}.tar")
         testsavedir = os.path.join(args.ckpt_dir, f'render_test')
         rgbnet_file = os.path.join(args.ckpt_dir, f'rgbnet_{S}_{E}.tar')
+        # rgbnet_file = os.path.join(args.ckpt_dir, f'rgbnet_0_9.tar')
         # if rgbnet_file does not exist, find whether os.path.join(ckpt_path.parent, "rgbnet.tar") exists
         if not os.path.exists(rgbnet_file):
             rgbnet_file = os.path.join(pathlib.Path(args.ckpt_dir).parent, f'rgbnet_{S}_{E}.tar')

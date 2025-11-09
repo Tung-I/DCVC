@@ -41,9 +41,9 @@ Usage:
         --config configs/dynerf_flame_steak/av1_qp20.py  \
         --ckpt_dir logs/dynerf_flame_steak/av1_qp20/compressed_av1_qp20_g20_yuv444p
 
-    python render.py --render_train --frame_ids 0 5 10 15 19 \
-        --config configs/NHR/sport1.py  \
-        --ckpt_dir logs/NHR/sport1
+    python render.py --render_test --frame_ids 0 5 10 15 19 \
+        --config configs/dynerf_flame_steak/hevc_qp36_flat4_affine.py  \
+        --ckpt_dir logs/dynerf_flame_steak/hevc_qp36_flat4_affine
 """
 
 def config_parser():

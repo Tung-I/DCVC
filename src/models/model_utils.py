@@ -378,27 +378,46 @@ def pack_planes_to_rgb(x: torch.Tensor, align: int = DCVC_ALIGN, mode: str = "fl
 
 def unpack_rgb_to_planes(y_pad: torch.Tensor, C: int, orig_size: Tuple[int, int], mode: str = "flatten"):
     """
-    Inverse of pack_planes_to_rgb (kept here unchanged; you’ll extend for flat4 in your next step).
+    Inverse of pack_planes_to_rgb for modes {"mosaic","flat4","flatten"}.
+      - mosaic : 3 groups of 4ch via pixel_shuffle(2) → pixel_unshuffle(2)
+      - flat4  : 3 groups of 4ch tiled 2x2 mono      → untile back to 4ch
+      - flatten: 12ch tiled as 3x4 mono               → untile back to 12ch
     """
-    if mode not in ("mosaic", "flatten"):
-        # NOTE: you'll add "flat4" inverse in the follow-up step
+    if mode not in ("mosaic", "flatten", "flat4"):
         raise ValueError(f"unpack: unknown mode '{mode}'")
 
+    if C != 12:
+        raise ValueError(f"unpack({mode}): C must be 12 (got {C})")
+
     H2, W2 = orig_size
-    y = y_pad[..., :H2, :W2]
+    y = y_pad[..., :H2, :W2]  # remove pad
 
     if mode == "mosaic":
-        if C != 12:
-            raise ValueError(f"unpack(mosaic): C must be 12 (got {C})")
+        # y is [T,3,2H,2W]; pack used tiles[::-1] (B,G,R) so we split (b,g,r) and unshuffle (r,g,b)
         b, g, r = y.split(1, dim=1)
-        blocks = [F.pixel_unshuffle(ch, 2) for ch in (r, g, b)]
+        blocks = [F.pixel_unshuffle(ch, 2) for ch in (r, g, b)]  # each -> [T,4,H,W]
+        return torch.cat(blocks, dim=1)  # [T,12,H,W]
+
+    elif mode == "flat4":
+        # y is [T,3,2H,2W]; pack used mono[::-1] so split (b,g,r), then untile in order (r,g,b)
+        if (H2 % 2) != 0 or (W2 % 2) != 0:
+            raise ValueError(f"unpack(flat4): orig_size {(H2,W2)} must be divisible by (2,2)")
+        H = H2 // 2
+        W = W2 // 2
+
+        b, g, r = y.split(1, dim=1)
+
+        def _untile_2x2(mono_1x: torch.Tensor) -> torch.Tensor:
+            # mono_1x: [T,1,2H,2W] -> [T,4,H,W] with (r=2,c=2)
+            return rearrange(mono_1x, 'T 1 (r H) (c W) -> T (r c) H W', r=2, c=2, H=H, W=W)
+
+        blocks = [_untile_2x2(ch) for ch in (r, g, b)]  # match pack's reverse order
         return torch.cat(blocks, dim=1)  # [T,12,H,W]
 
     else:  # "flatten"
-        if C != 12:
-            raise ValueError(f"unpack(flatten): C must be 12 (got {C})")
-        mono = y[:, :1]                      # [T,1,3H,4W]
-        if H2 % 3 != 0 or W2 % 4 != 0:
+        # y is [T,3,3H,4W] but only the first channel carries data (repeated to RGB in pack)
+        mono = y[:, :1]  # [T,1,3H,4W]
+        if (H2 % 3) != 0 or (W2 % 4) != 0:
             raise ValueError(f"unpack(flatten): orig_size {(H2,W2)} not divisible by (3,4)")
         H = H2 // 3
         W = W2 // 4

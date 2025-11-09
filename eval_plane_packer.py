@@ -174,22 +174,6 @@ def main():
         density = ckpt["model_state_dict"]["density.grid"].clone()  # [1,1,Dy,Dx,Dz]
         voxel_size_ratio = ckpt["model_kwargs"]["voxel_size_ratio"]
         masks = None
-        # if "act_shift" in ckpt["model_state_dict"]:
-        #     alpha = 1 - (torch.exp(density + ckpt["model_state_dict"]["act_shift"]) + 1) ** (-voxel_size_ratio)
-        #     alpha = F.max_pool3d(alpha, kernel_size=3, padding=1, stride=1)
-        #     mask = alpha < 1e-4
-        #     density[mask] = -5
-        #     feature_alpha = F.interpolate(alpha, size=tuple(np.array(density.shape[-3:]) * 3),
-        #                                   mode="trilinear", align_corners=True)
-        #     mask_fg = feature_alpha >= 1e-4
-        #     masks = {
-        #         "xy": mask_fg.sum(axis=4),
-        #         "xz": mask_fg.sum(axis=3),
-        #         "yz": mask_fg.sum(axis=2),
-        #     }
-        #     masks['xy_plane'] = masks['xy']
-        #     masks['xz_plane'] = masks['xz']
-        #     masks['yz_plane'] = masks['yz']
 
         # ---- feature planes ----
         planes = {k.split(".")[-1]: v.clone() for k, v in ckpt["model_state_dict"].items()
