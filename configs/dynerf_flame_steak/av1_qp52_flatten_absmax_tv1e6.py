@@ -1,39 +1,34 @@
 _base_ = '../default.py'
-expname = 'sport1_hevc_qp32'
-ckptname = 'sport1'
-wandbprojectname = 'NHR'
-basedir = '/home/tungichen_umass_edu/DCVC/logs/NHR'
+expname = 'av1_qp52_flatten_absmax_tv1e6'
+ckptname = 'flame_steak_video_ds3'
+wandbprojectname = 'ablation_flame_steak'
+basedir = '/home/tungichen_umass_edu/DCVC/logs/dynerf_flame_steak'
 
 data = dict(
-	datadir='/work/pi_rsitaram_umass_edu/tungi/datasets/NHR/sport_1',   # scene data folder
-	dataset_type='NHR',
-	white_bkgd=True,
-	xyz_min = [-0.1531104 , -0.99574334, -0.40296442],
-	xyz_max = [0.20760746, 0.01441086, 0.49955044],
-	test_frames =[5,41],
-    height=480,
-    width=640,
-	inverse_y=True,
+	datadir='/home/tungichen_umass_edu/DCVC/data/n3d/flame_steak/llff/',
+	dataset_type='llff',
+ 	ndc=True,
+	xyz_min = [-1.4,  -1.4, -0.6],
+	xyz_max = [ 1.4,   1.4,  0.6],
 	load2gpu_on_the_fly=True,
+    test_frames = [0],
+	factor = 3,
 )
-
 fine_model_and_render = dict(
-	num_voxels=120**3,
-	num_voxels_base=120**3,
+	num_voxels=210**3,
+	num_voxels_base=210**3,
 	k0_type='PlaneGrid',
 	rgbnet_dim=36,
     rgbnet_width=128,
-    mpi_depth=192,
-	RGB_model = 'MLP',
-	rgbnet_depth = 2,
-	dynamic_rgbnet = True,
-	viewbase_pe = 4,
-	plane_scale = 3,
-    stepsize=1,
+    mpi_depth=280,
+	stepsize=1,
+	fast_color_thres = 1.0/256.0/80,
+    viewbase_pe = 2,
+    dynamic_rgbnet = True,
 )
 
 codec = dict(
-    name = 'HEVCVideoCodec',
+    name = 'AV1VideoCodec',
     ckpt_path = None,
     train_mode='ste',
     unet_pre_base = 32,             # UNet width
@@ -51,23 +46,22 @@ codec = dict(
     gop = 20,
     fps = 30,
     pix_fmt = 'yuv444p',
-    hevc_qp = 32,
+    hevc_qp = None,
     vp9_qp = None,
-    av1_qp = None,
+    av1_qp = 52,
 )
-
 
 _k = 1
 fine_train = dict(
     ray_sampler='flatten',
-	N_iters=32000,
+	N_iters=25000,
 	N_rand=5000,   
 	tv_every=1,                   # count total variation loss every tv_every step
     tv_after=10000,                   # count total variation loss from tv_from step
     tv_before=30000,                  # count total variation before the given number of iterations
     tv_dense_before=30000,            # count total variation densely before the given number of iterations
-    weight_tv_density=5e-6,        # weight of total variation loss of density voxel grid
-	weight_tv_k0=5e-5,
+    weight_tv_density=1e-6,        # weight of total variation loss of density voxel grid
+	weight_tv_k0=1e-6,
     weight_l1_loss=0,
 	weight_distortion = 0,
 	pg_scale=[],
@@ -85,5 +79,5 @@ fine_train = dict(
 )
 
 coarse_train = dict(
-	N_iters = 0
+    N_iters=0,
 )

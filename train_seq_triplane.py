@@ -21,7 +21,9 @@ from src.data_loader.sampler import MultiBucketCycleSampler
 """
 Usage:
     python train_seq_triplane.py --config configs/NHR/sport1.py --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 --training_mode 1
-    python train_seq_triplane.py --config configs/dynerf_coffee_martini/video.py --frame_ids 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 --training_mode 1
+    python train_seq_triplane.py --config configs/dynerf_coffee_martini/video.py --frame_ids 0 1 2 3 4 5 6 7 8 9  --training_mode 1
+    python train_seq_triplane.py --config configs/dynerf_cut_roasted_beef/video.py --frame_ids 0 1 2 3 4 5 6 7 8 9  --training_mode 1
+    python train_seq_triplane.py --config configs/dynerf_cook_spinach/video.py --frame_ids 0 1 2 3 4 5 6 7 8 9  --training_mode 1
 """
 
 WANDB = True

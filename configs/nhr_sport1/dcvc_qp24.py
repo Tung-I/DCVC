@@ -1,5 +1,5 @@
 _base_ = '../default.py'
-expname = 'sport1_hevc_qp32'
+expname = 'sport1_dcvc_qp24'
 ckptname = 'sport1'
 wandbprojectname = 'NHR'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/NHR'
@@ -33,34 +33,34 @@ fine_model_and_render = dict(
 )
 
 codec = dict(
-    name = 'HEVCVideoCodec',
+    name = 'DCVCVideoCodec',
     ckpt_path = None,
     train_mode='ste',
     unet_pre_base = 32,             # UNet width
     unet_post_base = 32,
     in_channels = 12,  
     convert_ycbcr=True,
-    dcvc_qp = None,
     quant_mode = "absmax",
     global_range = (-20.0, 20.0),
-    packing_mode = "flatten",
+    packing_mode = "flat4",
     use_amp=True,
     quality=None,
-    codec_refresh_k = 128,
+    codec_refresh_k = 32,
     refresh_trigger_eps = 0.05,  # e.g., 0.05 to refresh early if planes drift >5% L2
-    gop = 20,
+    gop = 10,
     fps = 30,
     pix_fmt = 'yuv444p',
-    hevc_qp = 32,
+    hevc_qp = None,
     vp9_qp = None,
     av1_qp = None,
+    dcvc_qp = 24,
 )
 
 
 _k = 1
 fine_train = dict(
     ray_sampler='flatten',
-	N_iters=32000,
+	N_iters=25000,
 	N_rand=5000,   
 	tv_every=1,                   # count total variation loss every tv_every step
     tv_after=10000,                   # count total variation loss from tv_from step

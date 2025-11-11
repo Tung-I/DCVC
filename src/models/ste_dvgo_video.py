@@ -363,6 +363,8 @@ class STE_DVGO_Video(nn.Module):
             beg = self.frameids[0]
             eend = self.frameids[-1]
             rgbnet_file = os.path.join(cfg.basedir, cfg.ckptname, f'rgbnet_{beg}_{eend}.tar')
+            print(f"rgbnet_file:{rgbnet_file}")
+            raise Exception
             checkpoint =torch.load(rgbnet_file)
             self.rgbnet.load_state_dict(checkpoint['model_state_dict']) 
         except Exception as e:

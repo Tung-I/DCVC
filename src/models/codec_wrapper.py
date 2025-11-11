@@ -298,88 +298,135 @@ class DCVCVideoCodecWrapper(nn.Module):
         super().__init__()
         self.device       = torch.device(device)
         self.packing_mode = cfg_dcvc.packing_mode
-        self.pack_fn      = pack_planes_to_rgb
-        self.unpack_fn    = unpack_rgb_to_planes
-        self.qp           = int(cfg_dcvc.dcvc_qp)
-        self.quant_mode   = cfg_dcvc.quant_mode
-        self.global_range = tuple(cfg_dcvc.global_range)
-        self.align        = int(getattr(cfg_dcvc, "align", DCVC_ALIGN))
         self.in_channels  = int(cfg_dcvc.in_channels)
-        self.use_amp      = bool(getattr(cfg_dcvc, "use_amp", False))
-        self.amp_dtype    = torch.float16
+        # align default follows DCVC_ALIGN but can be overridden, same as VideoCodecWrapper
+        self.align        = int(getattr(cfg_dcvc, "align", DCVC_ALIGN))
 
-        # ---- instantiate the official video codec (I/P) ----
+        # ---- quantization config: mirror VideoCodecWrapper ----
+        # cfg.quant_mode: "global" -> "absmax", or "affine"
+        qmode = str(getattr(cfg_dcvc, "quant_mode", "global")).lower()
+        if qmode == "global":
+            qmode = "absmax"
+        self.quant_mode = qmode
+
+        # keep global_range only for potential external use; we match VideoCodecWrapper
+        self.global_range = tuple(
+            getattr(cfg_dcvc, "global_range", [-20.0, 20.0])
+        )
+
+        # Absolute-max range (appearance planes)
+        self.absmax_lo = float(getattr(cfg_dcvc, "absmax_lo", -20.0))
+        self.absmax_hi = float(getattr(cfg_dcvc, "absmax_hi",  20.0))
+
+        # Affine per-channel percentiles (robust stats)
+        self.affine_lo_p = float(getattr(cfg_dcvc, "affine_lo_p", 0.5))   # 0.5th percentile
+        self.affine_hi_p = float(getattr(cfg_dcvc, "affine_hi_p", 99.5))  # 99.5th percentile
+        self.affine_eps  = float(getattr(cfg_dcvc, "affine_eps", 1e-6))
+
+        # DCVC bits / AMP
+        self.qp        = int(getattr(cfg_dcvc, "dcvc_qp", None))
+        self.use_amp   = bool(getattr(cfg_dcvc, "use_amp", False))
+        self.amp_dtype = torch.float16
+
+        # ---- instantiate the official DCVC video codec (I/P) ----
         self.codec = DCVCVideoCodec(
             i_frame_weight_path='/home/tungichen_umass_edu/DCVC/checkpoints/cvpr2025_image.pth.tar',
             p_frame_weight_path='/home/tungichen_umass_edu/DCVC/checkpoints/cvpr2025_video.pth.tar',
-            reset_interval=int(getattr(cfg_dcvc, "reset_interval", 32)),
+            # reset_interval=int(getattr(cfg_dcvc, "reset_interval", 32)),
+            reset_interval=int(getattr(cfg_dcvc, "reset_interval", 20)),
             intra_period=int(getattr(cfg_dcvc, "intra_period", -1)),
             device=str(self.device),
-            half_precision=self.use_amp,   # safe: nets converted after update()
+            half_precision=self.use_amp,  # nets converted after update()
         )
 
     # ------------------------------ feature planes ------------------------------
-
     def forward(self, frames: torch.Tensor):
         """
         frames : [T, C, H, W]  float32/float16 on any device (C should match cfg.in_channels)
         -> recon [T, C, H, W] on input device; bpp, psnr scalars
+
+        Quantization / packing / unpacking is made consistent with VideoCodecWrapper.
         """
         assert frames.dim() == 4, "Expected [T,C,H,W]"
-        assert frames.shape[1] == self.in_channels, f"expected C={self.in_channels}, got {frames.shape[1]}"
+        assert frames.shape[1] == self.in_channels, \
+            f"expected C={self.in_channels}, got {frames.shape[1]}"
+
         in_dev = frames.device
-        T, C, H, W = frames.shape
+        # match VideoCodecWrapper: do everything in float32 on the input device
+        x = frames.to(dtype=torch.float32, device=in_dev, non_blocking=True)
+        T, C, H, W = x.shape
 
-        x = frames.to(torch.float32)
+        # ---- 1) Quantization to [0,1]: same policy as VideoCodecWrapper ----
+        if self.quant_mode == "absmax":
+            # global absolute max in fixed range [absmax_lo, absmax_hi]
+            lo = torch.tensor(self.absmax_lo, device=in_dev, dtype=torch.float32)
+            hi = torch.tensor(self.absmax_hi, device=in_dev, dtype=torch.float32)
+            scale = hi - lo
+            x01 = (x - lo) / scale
+            deq_lo    = lo          # scalar
+            deq_scale = scale       # scalar
+            peak_for_psnr = float(scale.item())
+        elif self.quant_mode == "affine":
+            # per-channel robust affine quantization from percentiles over {T,H,W}
+            x_flat = x.permute(1, 0, 2, 3).contiguous().view(C, -1)  # [C, T*H*W]
+            q_lo = torch.quantile(x_flat, q=self.affine_lo_p / 100.0, dim=1)  # [C]
+            q_hi = torch.quantile(x_flat, q=self.affine_hi_p / 100.0, dim=1)  # [C]
 
-        # 1) Normalize to [0,1] over the same policy used in training
-        x01, c_min, scale = normalize_planes(x, mode=self.quant_mode, global_range=self.global_range)  # [T,C,H,W]
+            scale_ch = (q_hi - q_lo).clamp_min(self.affine_eps)      # [C]
+            lo_ch    = q_lo
 
-        # 2) Pack each time-step to 3ch (RGB-ish) + pad to align
-        #    pack_planes_to_rgb works on [T,C,H,W]
-        y_pad, orig_size = self.pack_fn(x01, align=self.align, mode=self.packing_mode)   # [T,3,H2p,W2p], (H2,W2)
-        H2p, W2p = y_pad.shape[-2:]
-        H2,  W2  = orig_size
+            # Broadcast to [1,C,1,1]
+            deq_lo    = lo_ch.view(1, C, 1, 1)
+            deq_scale = scale_ch.view(1, C, 1, 1)
 
-        # 3) Run DCVC video codec on [B=1, T, 3, H2p, W2p]
-        vid = y_pad.unsqueeze(0).to(self.device)                    # [1,T,3,H2p,W2p]
-        # channels_last doesn't apply to 5D tensors—ensure contiguous
+            x01 = (x - deq_lo) / deq_scale
+            x01 = x01.clamp_(0.0, 1.0)
+
+            # Peak for PSNR: maximum per-channel dynamic range
+            peak_for_psnr = float(scale_ch.max().item())
+        else:
+            raise NotImplementedError(f"Unknown quant_mode '{self.quant_mode}' for DCVCVideoCodecWrapper.")
+
+        # ---- 2) Pack to RGB canvases + internal padding (same as VideoCodecWrapper) ----
+        canv_pad, orig_size = pack_planes_to_rgb(x01, align=self.align, mode=self.packing_mode)
+        # canv_pad: [T,3,Hp,Wp], orig_size = (H2, W2) is the unpadded canvas for packing
+        H2, W2 = orig_size
+        Hp, Wp = canv_pad.shape[-2:]
+
+        # ---- 3) DCVC video round-trip on [B=1, T, 3, Hp, Wp] in [0,1] ----
+        vid = canv_pad.unsqueeze(0).to(self.device)   # [1,T,3,Hp,Wp]
         vid = vid.contiguous()
 
         with torch.cuda.amp.autocast(enabled=self.use_amp, dtype=self.amp_dtype):
-            enc = self.codec.compress(vid, self.qp)                 # dict with total_bits, shape meta
-            dec = self.codec.decompress(enc)                        # [1,T,3,H2p,W2p] in [0,1]
-        x_hat_3 = dec[:, :, :, :H2p, :W2p]                          # [1,T,3,H2p,W2p]
-        x_hat_3 = x_hat_3.squeeze(0).to(torch.float32)              # [T,3,H2p,W2p]
+            enc = self.codec.compress(vid, self.qp)   # dict with "total_bits"
+            dec = self.codec.decompress(enc)          # [1,T,3,Hp,Wp] in [0,1]
 
-        # 4) Crop to original pack size and unpack back to planes per frame
-        x_hat_3 = x_hat_3[..., :H2, :W2]                            # [T,3,H2,W2]
-        rec01   = self.unpack_fn(x_hat_3, C, (H2, W2), mode=self.packing_mode)  # [T,C,H,W]
+        x_hat_3 = dec.squeeze(0).to(torch.float32)    # [T,3,Hp,Wp]
 
-        # 5) De-normalize to raw domain and move to caller device
-        recon = (rec01 * scale + c_min).to(torch.float32).to(in_dev, non_blocking=True)
+        # ---- 4) Crop to original canvas size and unpack back to planes ----
+        rec_canv = x_hat_3[..., :H2, :W2]             # [T,3,H2,W2]
+        rec01    = unpack_rgb_to_planes(rec_canv, C, (H2, W2), mode=self.packing_mode)  # [T,C,H,W]
 
-        # 6) Bits-per-padded-pixel over the segment
+        # ---- 5) De-normalize to raw domain and move back to caller device ----
+        # deq_scale / deq_lo can be scalar or [1,C,1,1]; broadcasting works in both cases
+        recon = (rec01 * deq_scale + deq_lo).to(torch.float32).to(in_dev, non_blocking=True)
+
+        # ---- 6) Bits-per-padded-pixel (same definition as VideoCodecWrapper) ----
         total_bits = float(enc["total_bits"])
-        bpp = torch.tensor(total_bits / float(T * H2p * W2p), device=in_dev, dtype=torch.float32)
+        bpp_val = total_bits / float(T * Hp * Wp)
+        bpp = torch.tensor(bpp_val, device=in_dev, dtype=torch.float32)
 
-        # 7) PSNR in raw domain (global mode)
-        if self.quant_mode == "global":
-            peak = float(self.global_range[1] - self.global_range[0])  # typically 40
-            mse_raw = F.mse_loss(recon, x.to(recon.dtype))
-            psnr = tetrirf_utils.mse2psnr_with_peak(mse_raw, peak=peak)
-        else:
-            raise NotImplementedError("Per-channel PSNR not implemented for video wrapper.")
+        # ---- 7) PSNR in raw domain with the same peak definition ----
+        mse_raw = F.mse_loss(recon, x)
+        psnr = tetrirf_utils.mse2psnr_with_peak(mse_raw, peak=peak_for_psnr)
 
         return recon, bpp, psnr
 
     # --------------------------------- density ----------------------------------
-
     @torch.no_grad()
     def forward_density(self, dens_seq: torch.Tensor):
         """
         dens_seq : [T, 1, Dy, Dx, Dz]  float on any device
-                   (If you prefer [1,T,Dy,Dx,Dz], pass dens_seq = dens_seq.squeeze(0).)
         Returns:
             d_rec : [T, 1, Dy, Dx, Dz]  on input device
             bpp   : scalar tensor
@@ -390,84 +437,246 @@ class DCVCVideoCodecWrapper(nn.Module):
         T, _, Dy, Dx, Dz = dens_seq.shape
 
         # (i) map to [0,1]
-        d01 = dens_to01(dens_seq)                                  # [T,1,Dy,Dx,Dz]
+        d01 = dens_to01(dens_seq.to(dtype=torch.float32, device=in_dev, non_blocking=True))  # [T,1,Dy,Dx,Dz]
 
         # (ii) treat each t as [1,C,H,W] with C=Dy, H=Dx, W=Dz; tile → mono canvas
-        #      Canvas size is time-invariant for fixed Dy,Dx,Dz.
         mono_list = []
+        Hc = Wc = None
         for t in range(T):
-            chw = d01[t].view(1, Dy, Dx, Dz)                        # [1,C,H,W]
-            mono, (Hc, Wc) = tile_1xCHW(chw)                        # [Hc,Wc]
+            chw = d01[t].view(1, Dy, Dx, Dz)                         # [1,C,H,W]
+            mono, (Hct, Wct) = tile_1xCHW(chw)                       # [Hc,Wc]
+            if Hc is None:
+                Hc, Wc = Hct, Wct
             mono_list.append(mono)
-        # stack & repeat to 3ch
-        mono_stack = torch.stack(mono_list, dim=0)                  # [T,Hc,Wc]
-        y3 = mono_stack.unsqueeze(1).repeat(1, 3, 1, 1)             # [T,3,Hc,Wc]
 
-        # (iii) pad bottom/right to align (same for all frames)
+        mono_stack = torch.stack(mono_list, dim=0)                   # [T,Hc,Wc]
+        # replicate to 3 channels so DCVC can operate on RGB-like input
+        y3 = mono_stack.unsqueeze(1).repeat(1, 3, 1, 1)              # [T,3,Hc,Wc]
+
+        # (iii) pad bottom/right to align (same as VideoCodecWrapper)
         pad_h = (self.align - Hc % self.align) % self.align
         pad_w = (self.align - Wc % self.align) % self.align
-        y_pad = F.pad(y3, (0, pad_w, 0, pad_h), mode="replicate")   # [T,3,Hp,Wp]
-        Hp, Wp = y_pad.shape[-2], y_pad.shape[-1]
+        y_pad = F.pad(y3, (0, pad_w, 0, pad_h), mode="replicate")    # [T,3,Hp,Wp]
+        Hp, Wp = y_pad.shape[-2:]
 
-        # (iv) run DCVC video codec
-        vid = y_pad.unsqueeze(0).to(self.device)                    # [1,T,3,Hp,Wp]
+        # (iv) DCVC video codec on [1,T,3,Hp,Wp]
+        vid = y_pad.unsqueeze(0).to(self.device)                     # [1,T,3,Hp,Wp]
         vid = vid.contiguous()
         enc = self.codec.compress(vid, self.qp)
-        dec = self.codec.decompress(enc)                            # [1,T,3,Hp,Wp]
-        x_hat = dec.squeeze(0).to(torch.float32)[..., :Hc, :Wc]     # [T,3,Hc,Wc]
+        dec = self.codec.decompress(enc)                             # [1,T,3,Hp,Wp]
+
+        x_hat = dec.squeeze(0).to(torch.float32)[..., :Hc, :Wc]      # [T,3,Hc,Wc]
 
         # (v) take mono channel back, untile each t → [1,Dy,Dx,Dz], stack back
         d01_recs = []
         for t in range(T):
-            mono_rec = x_hat[t, 0]                                  # [Hc,Wc]
-            rec_chw  = untile_to_1xCHW(mono_rec, Dy, Dx, Dz)        # [1,Dy,Dx,Dz]
+            mono_rec = x_hat[t, 0]                                   # [Hc,Wc]
+            rec_chw  = untile_to_1xCHW(mono_rec, Dy, Dx, Dz)         # [1,Dy,Dx,Dz]
             d01_recs.append(rec_chw)
-        d01_rec = torch.stack(d01_recs, dim=0)                      # [T,1?,Dy,Dx,Dz] but rec_chw is [1,C,H,W]
-        d01_rec = d01_rec.view(T, Dy, Dx, Dz).unsqueeze(1)          # [T,1,Dy,Dx,Dz]
+        d01_rec = torch.stack(d01_recs, dim=0)                       # [T,1,Dy,Dx,Dz]
 
         # (vi) map back to raw density and move to caller device
-        d_rec = dens_from01(d01_rec).to(in_dev, non_blocking=True)  # [T,1,Dy,Dx,Dz]
+        d_rec = dens_from01(d01_rec).to(in_dev, non_blocking=True)   # [T,1,Dy,Dx,Dz]
 
-        # bpp over padded pixels across T
+        # bpp over padded pixels across T (same as VideoCodecWrapper)
         total_bits = float(enc["total_bits"])
-        bpp = torch.tensor(total_bits / float(T * Hp * Wp), device=in_dev, dtype=torch.float32)
+        bpp = torch.tensor(total_bits / float(T * Hp * Wp),
+                           device=in_dev, dtype=torch.float32)
 
-        # PSNR with fixed peak=35 (for [-5,30] mapping)
+        # PSNR with fixed peak=35 (for [-5,30] mapping), same as VideoCodecWrapper
         mse = F.mse_loss(d_rec, dens_seq.to(d_rec.dtype))
         psnr = 10.0 * torch.log10((35.0 ** 2) / (mse + 1e-12))
 
         return d_rec, bpp, psnr
 
+
+# class DCVCVideoCodecWrapper(nn.Module):
+#     """
+#     Segment-wise DCVC wrapper for TriPlane features and density grids.
+
+#     Interfaces (time-major):
+#       - forward(frames):        frames shape [T, C, H, W]
+#       - forward_density(dseq):  dseq   shape [T, 1, Dy, Dx, Dz]
+
+#     Returns:
+#       recon     : [T, C, H, W]  (or [T, 1, Dy, Dx, Dz] for density)
+#       bpp       : scalar tensor (bits per padded pixel over the segment)
+#       psnr      : scalar tensor (raw-domain, global peak)
+#     """
+#     def __init__(self, cfg_dcvc, device="cuda"):
+#         super().__init__()
+#         self.device       = torch.device(device)
+#         self.packing_mode = cfg_dcvc.packing_mode
+#         self.pack_fn      = pack_planes_to_rgb
+#         self.unpack_fn    = unpack_rgb_to_planes
+#         self.qp           = int(cfg_dcvc.dcvc_qp)
+#         self.quant_mode   = cfg_dcvc.quant_mode
+#         self.global_range = tuple(cfg_dcvc.global_range)
+#         self.align        = int(getattr(cfg_dcvc, "align", DCVC_ALIGN))
+#         self.in_channels  = int(cfg_dcvc.in_channels)
+#         self.use_amp      = bool(getattr(cfg_dcvc, "use_amp", False))
+#         self.amp_dtype    = torch.float16
+
+#         # ---- instantiate the official video codec (I/P) ----
+#         self.codec = DCVCVideoCodec(
+#             i_frame_weight_path='/home/tungichen_umass_edu/DCVC/checkpoints/cvpr2025_image.pth.tar',
+#             p_frame_weight_path='/home/tungichen_umass_edu/DCVC/checkpoints/cvpr2025_video.pth.tar',
+#             reset_interval=int(getattr(cfg_dcvc, "reset_interval", 32)),
+#             intra_period=int(getattr(cfg_dcvc, "intra_period", -1)),
+#             device=str(self.device),
+#             half_precision=self.use_amp,   # safe: nets converted after update()
+#         )
+
+#     # ------------------------------ feature planes ------------------------------
+
+#     def forward(self, frames: torch.Tensor):
+#         """
+#         frames : [T, C, H, W]  float32/float16 on any device (C should match cfg.in_channels)
+#         -> recon [T, C, H, W] on input device; bpp, psnr scalars
+#         """
+#         assert frames.dim() == 4, "Expected [T,C,H,W]"
+#         assert frames.shape[1] == self.in_channels, f"expected C={self.in_channels}, got {frames.shape[1]}"
+#         in_dev = frames.device
+#         T, C, H, W = frames.shape
+
+#         x = frames.to(torch.float32)
+
+#         # 1) Normalize to [0,1] over the same policy used in training
+#         x01, c_min, scale = normalize_planes(x, mode=self.quant_mode, global_range=self.global_range)  # [T,C,H,W]
+
+#         # 2) Pack each time-step to 3ch (RGB-ish) + pad to align
+#         #    pack_planes_to_rgb works on [T,C,H,W]
+#         y_pad, orig_size = self.pack_fn(x01, align=self.align, mode=self.packing_mode)   # [T,3,H2p,W2p], (H2,W2)
+#         H2p, W2p = y_pad.shape[-2:]
+#         H2,  W2  = orig_size
+
+#         # 3) Run DCVC video codec on [B=1, T, 3, H2p, W2p]
+#         vid = y_pad.unsqueeze(0).to(self.device)                    # [1,T,3,H2p,W2p]
+#         # channels_last doesn't apply to 5D tensors—ensure contiguous
+#         vid = vid.contiguous()
+
+#         with torch.cuda.amp.autocast(enabled=self.use_amp, dtype=self.amp_dtype):
+#             enc = self.codec.compress(vid, self.qp)                 # dict with total_bits, shape meta
+#             dec = self.codec.decompress(enc)                        # [1,T,3,H2p,W2p] in [0,1]
+#         x_hat_3 = dec[:, :, :, :H2p, :W2p]                          # [1,T,3,H2p,W2p]
+#         x_hat_3 = x_hat_3.squeeze(0).to(torch.float32)              # [T,3,H2p,W2p]
+
+#         # 4) Crop to original pack size and unpack back to planes per frame
+#         x_hat_3 = x_hat_3[..., :H2, :W2]                            # [T,3,H2,W2]
+#         rec01   = self.unpack_fn(x_hat_3, C, (H2, W2), mode=self.packing_mode)  # [T,C,H,W]
+
+#         # 5) De-normalize to raw domain and move to caller device
+#         recon = (rec01 * scale + c_min).to(torch.float32).to(in_dev, non_blocking=True)
+
+#         # 6) Bits-per-padded-pixel over the segment
+#         total_bits = float(enc["total_bits"])
+#         bpp = torch.tensor(total_bits / float(T * H2p * W2p), device=in_dev, dtype=torch.float32)
+
+#         # 7) PSNR in raw domain (global mode)
+#         if self.quant_mode == "global":
+#             peak = float(self.global_range[1] - self.global_range[0])  # typically 40
+#             mse_raw = F.mse_loss(recon, x.to(recon.dtype))
+#             psnr = tetrirf_utils.mse2psnr_with_peak(mse_raw, peak=peak)
+#         else:
+#             raise NotImplementedError("Per-channel PSNR not implemented for video wrapper.")
+
+#         return recon, bpp, psnr
+
+#     # --------------------------------- density ----------------------------------
+
+#     @torch.no_grad()
+#     def forward_density(self, dens_seq: torch.Tensor):
+#         """
+#         dens_seq : [T, 1, Dy, Dx, Dz]  float on any device
+#                    (If you prefer [1,T,Dy,Dx,Dz], pass dens_seq = dens_seq.squeeze(0).)
+#         Returns:
+#             d_rec : [T, 1, Dy, Dx, Dz]  on input device
+#             bpp   : scalar tensor
+#             psnr  : scalar tensor (peak=35 for [-5,30] mapping)
+#         """
+#         assert dens_seq.dim() == 5 and dens_seq.shape[1] == 1, "Expected [T,1,Dy,Dx,Dz]"
+#         in_dev = dens_seq.device
+#         T, _, Dy, Dx, Dz = dens_seq.shape
+
+#         # (i) map to [0,1]
+#         d01 = dens_to01(dens_seq)                                  # [T,1,Dy,Dx,Dz]
+
+#         # (ii) treat each t as [1,C,H,W] with C=Dy, H=Dx, W=Dz; tile → mono canvas
+#         #      Canvas size is time-invariant for fixed Dy,Dx,Dz.
+#         mono_list = []
+#         for t in range(T):
+#             chw = d01[t].view(1, Dy, Dx, Dz)                        # [1,C,H,W]
+#             mono, (Hc, Wc) = tile_1xCHW(chw)                        # [Hc,Wc]
+#             mono_list.append(mono)
+#         # stack & repeat to 3ch
+#         mono_stack = torch.stack(mono_list, dim=0)                  # [T,Hc,Wc]
+#         y3 = mono_stack.unsqueeze(1).repeat(1, 3, 1, 1)             # [T,3,Hc,Wc]
+
+#         # (iii) pad bottom/right to align (same for all frames)
+#         pad_h = (self.align - Hc % self.align) % self.align
+#         pad_w = (self.align - Wc % self.align) % self.align
+#         y_pad = F.pad(y3, (0, pad_w, 0, pad_h), mode="replicate")   # [T,3,Hp,Wp]
+#         Hp, Wp = y_pad.shape[-2], y_pad.shape[-1]
+
+#         # (iv) run DCVC video codec
+#         vid = y_pad.unsqueeze(0).to(self.device)                    # [1,T,3,Hp,Wp]
+#         vid = vid.contiguous()
+#         enc = self.codec.compress(vid, self.qp)
+#         dec = self.codec.decompress(enc)                            # [1,T,3,Hp,Wp]
+#         x_hat = dec.squeeze(0).to(torch.float32)[..., :Hc, :Wc]     # [T,3,Hc,Wc]
+
+#         # (v) take mono channel back, untile each t → [1,Dy,Dx,Dz], stack back
+#         d01_recs = []
+#         for t in range(T):
+#             mono_rec = x_hat[t, 0]                                  # [Hc,Wc]
+#             rec_chw  = untile_to_1xCHW(mono_rec, Dy, Dx, Dz)        # [1,Dy,Dx,Dz]
+#             d01_recs.append(rec_chw)
+#         d01_rec = torch.stack(d01_recs, dim=0)                      # [T,1?,Dy,Dx,Dz] but rec_chw is [1,C,H,W]
+#         d01_rec = d01_rec.view(T, Dy, Dx, Dz).unsqueeze(1)          # [T,1,Dy,Dx,Dz]
+
+#         # (vi) map back to raw density and move to caller device
+#         d_rec = dens_from01(d01_rec).to(in_dev, non_blocking=True)  # [T,1,Dy,Dx,Dz]
+
+#         # bpp over padded pixels across T
+#         total_bits = float(enc["total_bits"])
+#         bpp = torch.tensor(total_bits / float(T * Hp * Wp), device=in_dev, dtype=torch.float32)
+
+#         # PSNR with fixed peak=35 (for [-5,30] mapping)
+#         mse = F.mse_loss(d_rec, dens_seq.to(d_rec.dtype))
+#         psnr = 10.0 * torch.log10((35.0 ** 2) / (mse + 1e-12))
+
+#         return d_rec, bpp, psnr
+
     
 
-def _rgb_to_bgr(img: np.ndarray) -> np.ndarray:
-    # safe channel flip with positive strides
-    return np.ascontiguousarray(img[..., ::-1])
+# def _rgb_to_bgr(img: np.ndarray) -> np.ndarray:
+#     # safe channel flip with positive strides
+#     return np.ascontiguousarray(img[..., ::-1])
 
-def _bgr_to_rgb(img: np.ndarray) -> np.ndarray:
-    return np.ascontiguousarray(img[..., ::-1])
+# def _bgr_to_rgb(img: np.ndarray) -> np.ndarray:
+#     return np.ascontiguousarray(img[..., ::-1])
 
-def _to_uint8_from_float01_bgr(img_f01_bgr: np.ndarray) -> np.ndarray:
-    return np.clip(np.round(img_f01_bgr * 255.0), 0, 255).astype(np.uint8)
+# def _to_uint8_from_float01_bgr(img_f01_bgr: np.ndarray) -> np.ndarray:
+#     return np.clip(np.round(img_f01_bgr * 255.0), 0, 255).astype(np.uint8)
 
-def _to_float01_from_uint8_bgr(img_u8_bgr: np.ndarray) -> np.ndarray:
-    return img_u8_bgr.astype(np.float32) / 255.0
+# def _to_float01_from_uint8_bgr(img_u8_bgr: np.ndarray) -> np.ndarray:
+#     return img_u8_bgr.astype(np.float32) / 255.0
 
-def _jpeg_roundtrip_bgr_float01(img_f01_bgr: np.ndarray, quality: int) -> tuple[np.ndarray, int]:
-    img8 = _to_uint8_from_float01_bgr(img_f01_bgr)
-    img8 = np.ascontiguousarray(img8)  # ensure contiguous for OpenCV
-    params = [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
-    ok, buf = cv2.imencode(".jpg", img8, params)
-    if not ok:
-        raise RuntimeError("JPEG encode failed")
-    bits = int(buf.size) * 8
-    dec = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)  # BGR8
-    if dec is None:
-        raise RuntimeError("JPEG decode failed")
-    if dec.ndim == 2:
-        dec = cv2.cvtColor(dec, cv2.COLOR_GRAY2BGR)
-    dec = np.ascontiguousarray(dec)  # be explicit
-    return _to_float01_from_uint8_bgr(dec), bits
+# def _jpeg_roundtrip_bgr_float01(img_f01_bgr: np.ndarray, quality: int) -> tuple[np.ndarray, int]:
+#     img8 = _to_uint8_from_float01_bgr(img_f01_bgr)
+#     img8 = np.ascontiguousarray(img8)  # ensure contiguous for OpenCV
+#     params = [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)]
+#     ok, buf = cv2.imencode(".jpg", img8, params)
+#     if not ok:
+#         raise RuntimeError("JPEG encode failed")
+#     bits = int(buf.size) * 8
+#     dec = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)  # BGR8
+#     if dec is None:
+#         raise RuntimeError("JPEG decode failed")
+#     if dec.ndim == 2:
+#         dec = cv2.cvtColor(dec, cv2.COLOR_GRAY2BGR)
+#     dec = np.ascontiguousarray(dec)  # be explicit
+#     return _to_float01_from_uint8_bgr(dec), bits
 
 
 class JPEGImageCodecWrapper(torch.nn.Module):

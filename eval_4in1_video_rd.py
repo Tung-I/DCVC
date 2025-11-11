@@ -112,6 +112,24 @@ python eval_4in1_video_rd.py \
   --ckpt_dir logs/dynerf_flame_steak/av1_qp52_mosaic_absmax_tv \
   --config configs/dynerf_flame_steak/av1_qp52_mosaic_absmax_tv.py
 
+  
+
+python eval_4in1_video_rd.py \
+  --startframe 0 --numframe 10 \
+  --plane_packing_mode flatten --grid_packing_mode flatten \
+  --qmode absmax \
+  --codec av1 --qp 62 --gop 10 --fps 30 --pix-fmt yuv444p \
+  --ckpt_dir logs/dynerf_flame_steak/av1_qp62_gop10_tv \
+  --config configs/dynerf_flame_steak/av1_qp62_gop10_tv.py 
+
+python eval_4in1_video_rd.py \
+  --startframe 0 --numframe 20 \
+  --plane_packing_mode flatten --grid_packing_mode flatten \
+  --qmode absmax \
+  --codec av1 --qp 52 --gop 20 --fps 30 --pix-fmt yuv444p \
+  --ckpt_dir logs/dynerf_flame_steak/av1_qp52_k16_resume \
+  --config configs/dynerf_flame_steak/av1_qp52_k16.py 
+
 """
 import os, io, sys, copy, json, argparse
 from typing import Dict, Tuple, List, Optional
