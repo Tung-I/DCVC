@@ -22,7 +22,7 @@ from TeTriRF.lib import dvgo, dvgo_video, dcvc_dvgo_video, utils      # unchange
 from TeTriRF.lib.load_data import load_data
 from torch_efficient_distloss import flatten_eff_distloss
 
-WANDB=True
+WANDB=False
 
 """
 Usage:
@@ -38,6 +38,11 @@ Usage:
     python train_codec_nerf_video.py --config configs/dynerf_flame_steak/hevc_qp44_gop10_tv.py --frame_ids 0 1 2 3 4 5 6 7 8 9 
     python train_codec_nerf_video.py --config configs/nhr_sport1/dcvc_qp24.py --frame_ids 0 1 2 3 4 5 6 7 8 9 
     python train_codec_nerf_video.py --config configs/dynerf_sear_steak/av1_qp50.py --frame_ids 0 1 2 3 4 5 6 7 8 9
+    python train_codec_nerf_video.py --config configs/dynerf_flame_steak/av1_qp44_flat4_absmax_tv.py --frame_ids 0 1 2 3 4 5 6 7 8 9
+    python train_codec_nerf_video.py --config configs/dynerf_flame_steak/av1_qp44_mosaic_absmax_tv.py --frame_ids 0 1 2 3 4 5 6 7 8 9
+    python train_codec_nerf_video.py --config configs/dynerf_flame_salmon/av1_qp32.py --frame_ids 0 1 2 3 4 5 6 7 8 9
+    python train_codec_nerf_video.py --config configs/dynerf_flame_steak/hevc_qp32_pynv.py --frame_ids 0 1 2 3 4 5 6 7 8 9
+
     """
 
 def build_arg_parser() -> argparse.ArgumentParser:

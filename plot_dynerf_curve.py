@@ -97,7 +97,7 @@ CURVE_DATA: Dict[str, Dict[str, Any]] = {
     #         {"qp": 62, "bitrate": 0.673, "psnr": 29.327}
     #     ],
     # },
-    "CatRF-AV1-TV": {
+    "CatRF-AV1": {
         "codec": "AV1",
         "method": "CatRF",
         # "points": [
@@ -113,7 +113,7 @@ CURVE_DATA: Dict[str, Dict[str, Any]] = {
             {"qp": 62, "bitrate": 0.656, "psnr": 29.16}
         ],
     },
-    "CatRF-DCVC-TV": {
+    "CatRF-DCVC": {
         "codec": "DCVC",
         "method": "CatRF",
         # "points": [

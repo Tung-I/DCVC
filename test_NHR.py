@@ -29,6 +29,14 @@ Usage:
     python test_NHR.py --render_test --frame_ids 0 4 \
         --config configs/NHR/sport2.py  \
         --ckpt_dir logs/NHR/sport2
+
+    python test_NHR.py --render_test --frame_ids 0 1 2 3 4 \
+        --config configs/NHR/sport1_960.py  \
+        --ckpt_dir logs/NHR/sport1_960
+
+    python test_NHR.py --render_test --frame_ids 0 1 2 3 4 \
+        --config configs/NHR/basketball_960.py  \
+        --ckpt_dir logs/NHR/basketball_960
 """
 
 def config_parser():

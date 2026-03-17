@@ -130,6 +130,56 @@ python eval_4in1_video_rd.py \
   --ckpt_dir logs/dynerf_flame_steak/av1_qp52_k16_resume \
   --config configs/dynerf_flame_steak/av1_qp52_k16.py 
 
+python eval_4in1_video_rd.py \
+  --startframe 0 --numframe 10 \
+  --plane_packing_mode flatten --grid_packing_mode flatten \
+  --qmode absmax \
+  --codec av1 --qp 32 --gop 10 --fps 30 --pix-fmt yuv444p \
+  --ckpt_dir logs/dynerf_sear_steak/av1_qp32 \
+  --config configs/dynerf_sear_steak/av1_qp32.py 
+
+python eval_4in1_video_rd.py \
+  --startframe 0 --numframe 10 \
+  --plane_packing_mode flatten --grid_packing_mode flatten \
+  --qmode absmax \
+  --codec av1 --qp 44 --gop 10 --fps 30 --pix-fmt yuv444p \
+  --ckpt_dir logs/NHR/sport1_av1_qp44 \
+  --config configs/nhr_sport1/av1_qp44.py 
+
+  python eval_4in1_video_rd.py \
+  --startframe 0 --numframe 5 \
+  --plane_packing_mode flatten --grid_packing_mode flatten \
+  --qmode absmax \
+  --codec av1 --qp 44 --gop 5 --fps 30 --pix-fmt yuv444p \
+  --ckpt_dir logs/NHR/sport1_av1_qp44_960 \
+  --config configs/nhr_sport1/av1_qp44.py \
+    --dump_images
+
+python eval_4in1_video_rd.py \
+  --startframe 0 --numframe 10 \
+  --plane_packing_mode flatten --grid_packing_mode flatten \
+  --qmode absmax \
+  --codec av1 --qp 32 --gop 10 --fps 30 --pix-fmt yuv444p \
+  --ckpt_dir logs/dynerf_sear_steak/av1_qp32 \
+  --config configs/dynerf_sear_steak/av1_qp32.py --dump_images
+
+python eval_4in1_video_rd.py \
+  --startframe 0 --numframe 10 \
+  --plane_packing_mode flatten --grid_packing_mode flatten \
+  --qmode absmax \
+  --codec av1 --qp 32 --gop 10 --fps 30 --pix-fmt yuv444p \
+  --ckpt_dir logs/dynerf_cook_spinach/av1_qp32 \
+  --config configs/dynerf_cook_spinach/av1_qp32.py --dump_images
+
+python eval_4in1_video_rd.py \
+  --startframe 0 --numframe 10 \
+  --plane_packing_mode flatten --grid_packing_mode flatten \
+  --qmode absmax \
+  --codec av1 --qp 32 --gop 10 --fps 30 --pix-fmt yuv444p \
+  --ckpt_dir logs/dynerf_cut_roasted_beef/av1_qp32 \
+  --config configs/dynerf_cut_roasted_beef/av1_qp32.py --dump_images
+
+
 """
 import os, io, sys, copy, json, argparse
 from typing import Dict, Tuple, List, Optional
@@ -284,27 +334,29 @@ def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
 
         if dump_images:
             import imageio
+            # print(f"Length of RGB: {len(rgbs)}")
+            # raise Exception
             for i in trange(len(rgbs)):
                 # save RGB
                 rgb8 = (np.clip(rgbs[i], 0, 1) * 255.0 + 0.5).astype(np.uint8)
                 imageio.imwrite(os.path.join(savedir, f'{frame_id}_{i}.png'), rgb8)
 
-                # --- robust depth visualization: ensure 3 channels ---
-                d = depths[i]
-                # squeeze trailing singleton channel if present
-                if d.ndim == 3 and d.shape[-1] == 1:
-                    d = d[..., 0]
-                # normalize to [0,1] and invert for visualization
-                d_norm = 1.0 - d / (np.max(d) + 1e-8)
-                d8 = (np.clip(d_norm, 0, 1) * 255.0 + 0.5).astype(np.uint8)
+                # # --- robust depth visualization: ensure 3 channels ---
+                # d = depths[i]
+                # # squeeze trailing singleton channel if present
+                # if d.ndim == 3 and d.shape[-1] == 1:
+                #     d = d[..., 0]
+                # # normalize to [0,1] and invert for visualization
+                # d_norm = 1.0 - d / (np.max(d) + 1e-8)
+                # d8 = (np.clip(d_norm, 0, 1) * 255.0 + 0.5).astype(np.uint8)
 
-                # make 3 channels for imageio/pillow (HxW -> HxWx3, or HxWx1 -> HxWx3)
-                if d8.ndim == 2:
-                    d8 = np.repeat(d8[..., None], 3, axis=-1)
-                elif d8.ndim == 3 and d8.shape[-1] == 1:
-                    d8 = np.repeat(d8, 3, axis=-1)
+                # # make 3 channels for imageio/pillow (HxW -> HxWx3, or HxWx1 -> HxWx3)
+                # if d8.ndim == 2:
+                #     d8 = np.repeat(d8[..., None], 3, axis=-1)
+                # elif d8.ndim == 3 and d8.shape[-1] == 1:
+                #     d8 = np.repeat(d8, 3, axis=-1)
 
-                imageio.imwrite(os.path.join(savedir, f'{frame_id}_{i}_depth.png'), d8)
+                # imageio.imwrite(os.path.join(savedir, f'{frame_id}_{i}_depth.png'), d8)
 
     return res
 
@@ -444,6 +496,7 @@ if __name__ == "__main__":
     render_frame_ids = frame_ids[::max(1, args.render_stride)]
     if args.render_max_frames > 0:
         render_frame_ids = render_frame_ids[:args.render_max_frames]
+    render_frame_ids = render_frame_ids[:1] # we only test the first frame
 
     # Output root
     out_root = os.path.abspath(os.path.join(args.ckpt_dir, '4in1test'))
@@ -646,6 +699,8 @@ if __name__ == "__main__":
         frame_ids_all = data_dict['frame_ids']
         id_mask = (frame_ids_all==fid)[i_test].numpy()
         t_test = np.array(i_test)[id_mask]
+        # print(f"t_test:{t_test}")
+        # raise Exception
 
         masks = None
         if data_dict['masks'] is not None:

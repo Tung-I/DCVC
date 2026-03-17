@@ -29,14 +29,218 @@ from src.models.model_utils import (
     jpeg_roundtrip_color,
     sandwich_planes_to_rgb, sandwich_rgb_to_planes,
     hevc_video_roundtrip, av1_video_roundtrip, vp9_video_roundtrip,
+    hevc_hw_video_roundtrip, av1_hw_video_roundtrip
 )
 
 import TeTriRF.lib.utils as tetrirf_utils
-import PyNvVideoCodec as nvc
 
 import av
 from TeTriRF.lib.unet import SmallUNet, create_mlp, BoundedProjector, LinearPack
 
+class PyNvVideoCodecWrapper(nn.Module):
+    """
+    Hardware-accelerated HEVC / AV1 wrapper using NVIDIA NVENC/NVDEC.
+
+    API matches VideoCodecWrapper:
+      - forward(frames: [T,C,H,W]) -> (recon [T,C,H,W], bpp scalar, psnr scalar)
+      - forward_density(dens_seq: [T,1,Dy,Dx,Dz]) -> same pattern
+    """
+    def __init__(self, cfg_codec, device="cuda"):
+        super().__init__()
+        self.device       = torch.device(device)
+        self.in_channels  = int(cfg_codec.in_channels)
+        self.packing_mode = cfg_codec.packing_mode
+        self.align        = int(getattr(cfg_codec, "align", 32))
+
+        self.quant_mode = str(getattr(cfg_codec, "quant_mode", "global")).lower()
+        if self.quant_mode == "global":
+            self.quant_mode = "absmax"
+
+        self.absmax_lo = float(getattr(cfg_codec, "absmax_lo", -20.0))
+        self.absmax_hi = float(getattr(cfg_codec, "absmax_hi",  20.0))
+
+        self.affine_lo_p = float(getattr(cfg_codec, "affine_lo_p", 0.5))
+        self.affine_hi_p = float(getattr(cfg_codec, "affine_hi_p", 99.5))
+        self.affine_eps  = float(getattr(cfg_codec, "affine_eps", 1e-6))
+
+        hevc_qp = str(cfg_codec.hevc_qp).lower()
+        av1_qp = str(cfg_codec.av1_qp).lower()
+        if hevc_qp != "none":
+            self.backend = "hevc"
+        elif av1_qp != "none":
+            self.backend = "av1"
+        else:
+            raise NotImplementedError(
+                f"For PyNvVideoCodecWrapper, you must specify a QP for at least one codec. Got hevc_qp={hevc_qp}, av1_qp={av1_qp}."
+            )
+
+        self.fps     = int(getattr(cfg_codec, "fps", 30))
+        self.gop     = int(getattr(cfg_codec, "gop", 20))
+        self.pix_fmt = str(getattr(cfg_codec, "pix_fmt", "yuv444p"))
+        self.gpu_id  = int(getattr(cfg_codec, "gpu_id", 0))
+
+        if getattr(cfg_codec, "qp", None) is not None:
+            self.qp = int(getattr(cfg_codec, "qp"))
+        elif self.backend == "hevc" and getattr(cfg_codec, "hevc_qp", None) is not None:
+            self.qp = int(getattr(cfg_codec, "hevc_qp"))
+        elif self.backend == "av1" and getattr(cfg_codec, "av1_qp", None) is not None:
+            self.qp = int(getattr(cfg_codec, "av1_qp"))
+        else:
+            raise ValueError("QP must be provided for hardware codec wrapper.")
+
+        # NVENC presets differ from x265/aom presets.
+        self.hw_preset = str(getattr(cfg_codec, "hw_preset", "p4"))
+        self.hw_tune   = str(getattr(cfg_codec, "hw_tune", "high_quality"))
+
+        self._last_bits = 0
+        self._last_stats = {}
+
+    @torch.no_grad()
+    def forward(self, frames: torch.Tensor):
+        assert frames.dim() == 4 and frames.shape[1] == self.in_channels
+        in_dev = frames.device
+        x = frames.to(dtype=torch.float32, device=in_dev, non_blocking=True)
+        T, C, H, W = x.shape
+
+        if self.quant_mode == "absmax":
+            lo = torch.tensor(self.absmax_lo, device=in_dev, dtype=torch.float32)
+            hi = torch.tensor(self.absmax_hi, device=in_dev, dtype=torch.float32)
+            scale = hi - lo
+            x01 = (x - lo) / scale
+            deq_lo = lo
+            deq_scale = scale
+            peak_for_psnr = float(scale.item())
+
+        elif self.quant_mode == "affine":
+            x_flat = x.permute(1, 0, 2, 3).contiguous().view(C, -1)
+            q_lo = torch.quantile(x_flat, q=self.affine_lo_p / 100.0, dim=1)
+            q_hi = torch.quantile(x_flat, q=self.affine_hi_p / 100.0, dim=1)
+
+            scale_ch = (q_hi - q_lo).clamp_min(self.affine_eps)
+            lo_ch    = q_lo
+
+            deq_lo    = lo_ch.view(1, C, 1, 1)
+            deq_scale = scale_ch.view(1, C, 1, 1)
+
+            x01 = (x - deq_lo) / deq_scale
+            x01 = x01.clamp_(0.0, 1.0)
+            peak_for_psnr = float(scale_ch.max().item())
+
+        else:
+            raise NotImplementedError(f"Unknown quant_mode '{self.quant_mode}'")
+
+        canv_pad, orig_size = pack_planes_to_rgb(x01, align=self.align, mode=self.packing_mode)
+        H2, W2 = orig_size
+        Hp, Wp = canv_pad.shape[-2:]
+        use_gray = (self.packing_mode == "flatten")
+
+        canv_cpu = canv_pad.detach().to("cpu", copy=True)
+
+        if self.backend == "hevc":
+            if use_gray:
+                rec_canv_cpu, bits, stats = hevc_hw_video_roundtrip(
+                    canv_cpu[:, :1],
+                    fps=self.fps, gop=self.gop, qp=self.qp,
+                    pix_fmt=self.pix_fmt, preset=self.hw_preset, tune=self.hw_tune,
+                    gpu_id=self.gpu_id, grayscale=True,
+                )
+                rec_canv_cpu = rec_canv_cpu.repeat(1, 3, 1, 1)
+            else:
+                rec_canv_cpu, bits, stats = hevc_hw_video_roundtrip(
+                    canv_cpu,
+                    fps=self.fps, gop=self.gop, qp=self.qp,
+                    pix_fmt=self.pix_fmt, preset=self.hw_preset, tune=self.hw_tune,
+                    gpu_id=self.gpu_id, grayscale=False,
+                )
+        else:  # av1
+            if use_gray:
+                rec_canv_cpu, bits, stats = av1_hw_video_roundtrip(
+                    canv_cpu[:, :1],
+                    fps=self.fps, gop=self.gop, qp=self.qp,
+                    pix_fmt=self.pix_fmt, preset=self.hw_preset, tune=self.hw_tune,
+                    gpu_id=self.gpu_id, grayscale=True,
+                )
+                rec_canv_cpu = rec_canv_cpu.repeat(1, 3, 1, 1)
+            else:
+                rec_canv_cpu, bits, stats = av1_hw_video_roundtrip(
+                    canv_cpu,
+                    fps=self.fps, gop=self.gop, qp=self.qp,
+                    pix_fmt=self.pix_fmt, preset=self.hw_preset, tune=self.hw_tune,
+                    gpu_id=self.gpu_id, grayscale=False,
+                )
+
+        self._last_bits = int(bits)
+        self._last_stats = stats
+
+        rec_canv = rec_canv_cpu.to(in_dev, non_blocking=True)[..., :H2, :W2]
+        rec01    = unpack_rgb_to_planes(rec_canv, C, (H2, W2), mode=self.packing_mode)
+        recon    = (rec01 * deq_scale + deq_lo).to(torch.float32)
+
+        bpp_val = float(self._last_bits) / float(T * Hp * Wp)
+        bpp     = torch.tensor(bpp_val, device=in_dev, dtype=torch.float32)
+        psnr    = tetrirf_utils.mse2psnr_with_peak(F.mse_loss(recon, x), peak=peak_for_psnr)
+        return recon, bpp, psnr
+
+    @torch.no_grad()
+    def forward_density(self, dens_seq: torch.Tensor):
+        assert dens_seq.dim() == 5 and dens_seq.shape[1] == 1
+        in_dev = dens_seq.device
+        T, _, Dy, Dx, Dz = dens_seq.shape
+
+        d   = dens_seq.to(dtype=torch.float32, device=in_dev, non_blocking=True)
+        d01 = dens_to01(d)
+
+        mono_list = []
+        Hc = Wc = None
+        for t in range(T):
+            chw = d01[t].view(1, Dy, Dx, Dz)
+            mono, (Hct, Wct) = tile_1xCHW(chw)
+            if Hc is None:
+                Hc, Wc = Hct, Wct
+            mono_list.append(mono)
+
+        mono_stack = torch.stack(mono_list, dim=0)      # [T,Hc,Wc]
+        canv = mono_stack.unsqueeze(1)                  # [T,1,Hc,Wc]
+
+        pad_h = (self.align - Hc % self.align) % self.align
+        pad_w = (self.align - Wc % self.align) % self.align
+        canv_pad = F.pad(canv, (0, pad_w, 0, pad_h), mode="replicate")
+        Hp, Wp = canv_pad.shape[-2:]
+
+        mono_cpu = canv_pad.detach().to("cpu", copy=True)
+
+        if self.backend == "hevc":
+            rec_mono_cpu, bits, stats = hevc_hw_video_roundtrip(
+                mono_cpu,
+                fps=self.fps, gop=self.gop, qp=self.qp,
+                pix_fmt=self.pix_fmt, preset=self.hw_preset, tune=self.hw_tune,
+                gpu_id=self.gpu_id, grayscale=True,
+            )
+        else:
+            rec_mono_cpu, bits, stats = av1_hw_video_roundtrip(
+                mono_cpu,
+                fps=self.fps, gop=self.gop, qp=self.qp,
+                pix_fmt=self.pix_fmt, preset=self.hw_preset, tune=self.hw_tune,
+                gpu_id=self.gpu_id, grayscale=True,
+            )
+
+        self._last_bits = int(bits)
+        self._last_stats = stats
+
+        rec_mono = rec_mono_cpu.to(in_dev, non_blocking=True)[..., :Hc, :Wc]
+        d01_recs = []
+        for t in range(T):
+            rec_chw = untile_to_1xCHW(rec_mono[t, 0], Dy, Dx, Dz)
+            d01_recs.append(rec_chw)
+        d01_rec = torch.stack(d01_recs, dim=0).view(T, 1, Dy, Dx, Dz)
+        d_rec   = dens_from01(d01_rec)
+
+        bpp_val = float(self._last_bits) / float(T * Hp * Wp)
+        bpp     = torch.tensor(bpp_val, device=in_dev, dtype=torch.float32)
+        mse     = F.mse_loss(d_rec, d)
+        psnr    = 10.0 * torch.log10((35.0 ** 2) / (mse + 1e-12))
+        return d_rec, bpp, psnr
+    
 
 class VideoCodecWrapper(nn.Module):
     """
@@ -63,6 +267,9 @@ class VideoCodecWrapper(nn.Module):
         self.affine_lo_p = float(getattr(cfg_codec, "affine_lo_p", 0.5))    # 0.5th percentile
         self.affine_hi_p = float(getattr(cfg_codec, "affine_hi_p", 99.5))   # 99.5th percentile
         self.affine_eps  = float(getattr(cfg_codec, "affine_eps", 1e-6))    # min scale
+
+        self._last_bits = None
+        self._last_stats = None
 
         # Backend choice
         name = str(cfg_codec.name).lower()
@@ -167,10 +374,6 @@ class VideoCodecWrapper(nn.Module):
                     pix_fmt=self.pix_fmt, grayscale=True
                 )
             elif self.backend == "av1":
-                # for q in [20, 26, 32, 38, 44]:
-                #     _, bits = av1_video_roundtrip(mono_cpu, fps=30, gop=20, qp=q, cpu_used=6, pix_fmt="yuv444p", grayscale=True)
-                #     print(q, bits)
-                # raise Exception
                 rec_mono_cpu, bits = av1_video_roundtrip(
                     mono_cpu, fps=self.fps, gop=self.gop, qp=self.qp, cpu_used=self.cpu_used,
                     pix_fmt=self.pix_fmt, grayscale=True

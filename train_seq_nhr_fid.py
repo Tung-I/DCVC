@@ -24,6 +24,9 @@ Usage:
         --frame_ids 0 1 2 3 4 5 6 7 8 9  \
             --training_mode 1  --eval_train
 
+    python train_seq_nhr_fid.py --config configs/NHR/sport1_960.py --frame_ids 0 1 2 3 4  --training_mode 1
+     python train_seq_nhr_fid.py --config configs/NHR/basketball_960.py --frame_ids 0 1 2 3 4  --training_mode 1
+
 """
 
 WANDB = True

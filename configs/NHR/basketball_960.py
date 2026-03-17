@@ -10,28 +10,43 @@ data = dict(
 	white_bkgd=True,
     xyz_min = [-0.3658, -0.95, -0.440],
     xyz_max = [0.4508, 0.3118, 0.5096],
-	test_frames =[5,41],
+	# test_frames =[5,41],
+    test_frames =[2,51, 52, 54, 55, 56],
     height=720,
     width=960,
 	inverse_y=True,
 	load2gpu_on_the_fly=True,
 )
+# fine_model_and_render = dict(
+# 	num_voxels=120**3,
+# 	num_voxels_base=120**3,
+# 	k0_type='PlaneGrid',
+# 	rgbnet_dim=36,
+#     rgbnet_width=128,
+#     mpi_depth=192,
+# 	RGB_model = 'MLP',
+# 	rgbnet_depth = 3,
+# 	dynamic_rgbnet = True,
+# 	viewbase_pe = 4,
+# )
 fine_model_and_render = dict(
-	num_voxels=120**3,
-	num_voxels_base=120**3,
+	num_voxels=192**3,
+	num_voxels_base=192**3,
 	k0_type='PlaneGrid',
 	rgbnet_dim=36,
     rgbnet_width=128,
     mpi_depth=192,
 	RGB_model = 'MLP',
-	rgbnet_depth = 3,
+	rgbnet_depth = 2,
 	dynamic_rgbnet = True,
 	viewbase_pe = 4,
+	plane_scale = 3,
+    stepsize=1,
 )
 
 
 fine_train = dict(
-	N_iters=12000,
+	N_iters=32000,
 	N_rand = 17800,
 	tv_every=1,                   # count total variation loss every tv_every step
     tv_after=2000,                   # count total variation loss from tv_from step

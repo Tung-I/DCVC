@@ -45,16 +45,16 @@ CURVE_DATA: Dict[str, Dict[str, Any]] = {
             {"qp": 62, "bitrate": 0.194, "psnr": 26.509}
         ],
     },
-    "TeTriRF-DCVC": {
-        "codec": "DCVC",
-        "method": "TeTriRF",
-        "points": [
-            {"qp": 60, "bitrate": 0.390, "psnr": 31.53},
-            {"qp": 48, "bitrate": 0.222, "psnr": 30.92},
-            {"qp": 36, "bitrate": 0.131, "psnr": 29.93},
-            {"qp": 24, "bitrate": 0.079, "psnr": 28.40}
-        ],
-    },
+    # "TeTriRF-DCVC": {
+    #     "codec": "DCVC",
+    #     "method": "TeTriRF",
+    #     "points": [
+    #         {"qp": 60, "bitrate": 0.390, "psnr": 31.53},
+    #         {"qp": 48, "bitrate": 0.222, "psnr": 30.92},
+    #         {"qp": 36, "bitrate": 0.131, "psnr": 29.93},
+    #         {"qp": 24, "bitrate": 0.079, "psnr": 28.40}
+    #     ],
+    # },
     "CatRF-VP9": {
         "codec": "VP9",
         "method": "CatRF",
@@ -253,7 +253,7 @@ def main():
             legend_handles,
             legend_labels,
             loc="lower right",
-            fontsize=10,
+            fontsize=8,
             ncol=ncol,
             frameon=False,
         )

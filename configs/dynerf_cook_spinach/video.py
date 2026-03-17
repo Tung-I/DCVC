@@ -1,15 +1,15 @@
 _base_ = '../default.py'
-expname = 'cook_spinach_video'
+expname = 'sear_steak_video'
 ckptname = None
-wandbprojectname = 'cook_spinach_video'
-basedir = '/home/tungichen_umass_edu/DCVC/logs/dynerf_cook_spinach'
+wandbprojectname = 'sear_steak_video'
+basedir = '/home/tungichen_umass_edu/DCVC/logs/dynerf_sear_steak'
 
 data = dict(
-	datadir='/home/tungichen_umass_edu/DCVC/data/n3d/cook_spinach/llff/',
+	datadir='/home/tungichen_umass_edu/DCVC/data/n3d/sear_steak/llff/',
 	dataset_type='llff',
  	ndc=True,
-	xyz_min = [-1.4,  -1.4, -0.6],
-	xyz_max = [ 1.4,   1.4,  0.6],
+	xyz_min = [-1.4,  -1.4, -1.0],
+	xyz_max = [ 1.4,   1.4,  1.0],
 	load2gpu_on_the_fly=True,
     test_frames = [0],
 	factor = 3,
