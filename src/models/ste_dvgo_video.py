@@ -54,6 +54,19 @@ class STE_DVGO_Video(nn.Module):
         self._dens_cache_psnr     = {fid: None for fid in self.frameids}   # scalar tensor
         self._dens_cache_rawsnap  = {fid: None for fid in self.frameids}   # [1,1,Dy,Dx,Dz]
 
+        # Per-stream timing / bitstream stats (same stats for all frames in a refreshed segment,
+        # but we store them per-frame for convenience)
+        self._codec_cache_stats = {
+            ax: {fid: {} for fid in self.frameids} for ax in ('xy', 'xz', 'yz')
+        }
+        self._dens_cache_stats = {fid: {} for fid in self.frameids}
+
+        # Last render-time stats from forward()
+        self._last_render_stats = {}
+
+        # Track when codec cache was last refreshed
+        self._last_codec_refresh_step = -1
+
         # Shared RGB head (same as image class)
         if self.cfg.fine_model_and_render.RGB_model == 'MLP':
             dim0 = (3 + 3*self.viewbase_pe*2) + self.cfg.fine_model_and_render.rgbnet_dim
@@ -90,12 +103,28 @@ class STE_DVGO_Video(nn.Module):
         merged_buffers = {**buffer_map, **buffer_overrides}
 
         # Render
+        if rays_o.is_cuda:
+            torch.cuda.synchronize(rays_o.device)
+        t0 = time.perf_counter()
+
         ret_frame = torch.func.functional_call(
             dvgo,
             {**merged_params, **merged_buffers},
             (rays_o, rays_d, viewdirs),
             {'shared_rgbnet': self.rgbnet, 'global_step': global_step, 'mode': mode, **render_kwargs}
         )
+
+        if rays_o.is_cuda:
+            torch.cuda.synchronize(rays_o.device)
+        render_sec = time.perf_counter() - t0
+        num_rays = int(rays_o.shape[0])
+        self._last_render_stats = {
+            "render_step": int(global_step if global_step is not None else -1),
+            "num_rays": float(num_rays),
+            "render_sec": float(render_sec),
+            "render_batch_fps": float(1.0 / max(render_sec, 1e-12)),
+            "render_rays_per_sec": float(num_rays / max(render_sec, 1e-12)),
+        }
 
         # BPP & diagnostics — *per current frame*, same formula as image class
         bpps_planes = [self._codec_cache_bpp[ax][frameid] for ax in ('xy','xz','yz')]
@@ -140,17 +169,25 @@ class STE_DVGO_Video(nn.Module):
     # -------------------------------------------------------------------------
     def _invalidate_codec_cache(self):
         self._codec_cache_step = -1
+        self._last_codec_refresh_step = -1
+
         for ax in ('xy','xz','yz'):
             for fid in self.frameids:
                 self._codec_cache[ax][fid] = None
                 self._codec_cache_bpp[ax][fid] = None
                 self._codec_cache_psnr[ax][fid] = None
                 self._codec_cache_rawsnap[ax][fid] = None
+                self._codec_cache_stats[ax][fid] = {}
+
         for fid in self.frameids:
             self._dens_cache[fid]         = None
             self._dens_cache_bpp[fid]     = None
             self._dens_cache_psnr[fid]    = None
             self._dens_cache_rawsnap[fid] = None
+            self._dens_cache_stats[fid]   = {}
+
+        self._last_render_stats = {}
+        
 
     @torch.no_grad()
     def _changed_too_much(self, cur: torch.Tensor, snap: torch.Tensor) -> bool:
@@ -204,7 +241,8 @@ class STE_DVGO_Video(nn.Module):
         for ax in ('xy','xz','yz'):
             xseg = planes_by_axis[ax]                               # [T,C,H,W]
             rec, bpp, psnr = self.codec(xseg)                       # rec [T,C,H,W], scalar bpp/psnr
-            # distribute per frame
+            stream_stats = self._snapshot_codec_stats(global_step)
+    
             for t, fid in enumerate(self.frameids):
                 x_raw = xseg[t:t+1]
                 self._codec_cache[ax][fid]       = rec[t:t+1].detach()
@@ -213,13 +251,17 @@ class STE_DVGO_Video(nn.Module):
                 self._codec_cache_psnr[ax][fid]  = (psnr.detach() if torch.is_tensor(psnr)
                                                     else torch.tensor(float(psnr), device=x_raw.device))
                 self._codec_cache_rawsnap[ax][fid] = x_raw.detach()
+                self._codec_cache_stats[ax][fid]   = copy.deepcopy(stream_stats)
 
         # ---------- Density sequence ----------
         # Build [T,1,Dy,Dx,Dz]
         with torch.no_grad():
             d_list = [self._gather_density_one_frame(fid).detach() for fid in self.frameids]
             d_seq  = torch.cat(d_list, dim=0)                       # [T,1,Dy,Dx,Dz]
+
         d_rec, d_bpp, d_psnr = self.codec.forward_density(d_seq)
+        dens_stats = self._snapshot_codec_stats(global_step)
+
         for t, fid in enumerate(self.frameids):
             d_raw = d_seq[t:t+1]
             self._dens_cache[fid]         = d_rec[t:t+1].detach()
@@ -228,8 +270,10 @@ class STE_DVGO_Video(nn.Module):
             self._dens_cache_psnr[fid]    = (d_psnr.detach() if torch.is_tensor(d_psnr)
                                              else torch.tensor(float(d_psnr), device=d_raw.device))
             self._dens_cache_rawsnap[fid] = d_raw.detach()
+            self._dens_cache_stats[fid]   = copy.deepcopy(dens_stats)
 
         self._codec_cache_step = int(global_step if global_step is not None else 0)
+        self._last_codec_refresh_step = self._codec_cache_step
 
     def _ste_overrides(self, frameid):
         """Build STE substitutions from per-frame cache (planes + density)."""
@@ -247,6 +291,71 @@ class STE_DVGO_Video(nn.Module):
         assert rec_d is not None, "Density cache empty—refresh first."
         overrides['density.grid'] = rec_d + (density - density.detach())
         return overrides
+
+    # -------------------------------------------------------------------------
+    # Snapshot codec stats
+    # -------------------------------------------------------------------------
+    def _snapshot_codec_stats(self, global_step=None):
+        """
+        Read stats from self.codec._last_stats and convert to a clean plain-Python dict.
+        """
+        raw = getattr(self.codec, "_last_stats", None)
+        if not isinstance(raw, dict):
+            return {}
+
+        out = {}
+        for k, v in raw.items():
+            if isinstance(v, (int, float)):
+                out[k] = float(v)
+            else:
+                out[k] = v
+
+        out["refresh_step"] = int(global_step if global_step is not None else -1)
+        return out
+
+    def get_perf_stats_for_wandb(self, frameid: int, global_step=None):
+        """
+        Return flat perf stats dict for the current frame:
+        - codec xy/xz/yz/density encode/decode stats
+        - render batch/rays-per-sec stats
+        """
+        out = {}
+
+        def _flatten(prefix: str, stats: dict):
+            if not isinstance(stats, dict):
+                return
+            keep = (
+                "num_frames",
+                "height",
+                "width",
+                "total_bits",
+                "encode_sec",
+                "decode_sec",
+                "encode_fps",
+                "decode_fps",
+                "refresh_step",
+            )
+            for k in keep:
+                if k in stats and isinstance(stats[k], (int, float)):
+                    out[f"{prefix}/{k}"] = float(stats[k])
+
+        # per-stream codec stats
+        for ax in ('xy', 'xz', 'yz'):
+            _flatten(f"codec/{ax}", self._codec_cache_stats[ax].get(frameid, {}))
+        _flatten("codec/density", self._dens_cache_stats.get(frameid, {}))
+
+        # flag whether codec was actually refreshed this step
+        if global_step is not None:
+            out["codec/refreshed_this_step"] = float(self._last_codec_refresh_step == int(global_step))
+
+        # latest render stats
+        rs = self._last_render_stats
+        if isinstance(rs, dict):
+            for k in ("num_rays", "render_sec", "render_batch_fps", "render_rays_per_sec", "render_step"):
+                if k in rs and isinstance(rs[k], (int, float)):
+                    out[f"render/{k}"] = float(rs[k])
+
+        return out
 
     # -------------------------------------------------------------------------
     # Model instantiation (same as your image class)

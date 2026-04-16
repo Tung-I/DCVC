@@ -1,7 +1,7 @@
 _base_ = '../default.py'
-expname = 'hevc_qp32_gop10_tv'
+expname = 'pynv_hevc_qp40_gop10'
 ckptname = 'flame_steak_video_ds3'
-wandbprojectname = 'ste_flame_steak'
+wandbprojectname = 'pynv_flame_steak'
 basedir = '/home/tungichen_umass_edu/DCVC/logs/dynerf_flame_steak'
 
 data = dict(
@@ -54,7 +54,7 @@ codec = dict(
     fps=30,
     pix_fmt='NV12',
 
-    hevc_qp=28,
+    hevc_qp=40,
     av1_qp=None,
     vp9_qp=None,
 

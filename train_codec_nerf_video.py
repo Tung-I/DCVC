@@ -22,7 +22,7 @@ from TeTriRF.lib import dvgo, dvgo_video, dcvc_dvgo_video, utils      # unchange
 from TeTriRF.lib.load_data import load_data
 from torch_efficient_distloss import flatten_eff_distloss
 
-WANDB=False
+WANDB=True
 
 """
 Usage:
@@ -41,9 +41,10 @@ Usage:
     python train_codec_nerf_video.py --config configs/dynerf_flame_steak/av1_qp44_flat4_absmax_tv.py --frame_ids 0 1 2 3 4 5 6 7 8 9
     python train_codec_nerf_video.py --config configs/dynerf_flame_steak/av1_qp44_mosaic_absmax_tv.py --frame_ids 0 1 2 3 4 5 6 7 8 9
     python train_codec_nerf_video.py --config configs/dynerf_flame_salmon/av1_qp32.py --frame_ids 0 1 2 3 4 5 6 7 8 9
-    python train_codec_nerf_video.py --config configs/dynerf_flame_steak/hevc_qp32_pynv.py --frame_ids 0 1 2 3 4 5 6 7 8 9
+    python train_codec_nerf_video.py --config configs/dynerf_flame_steak/pynv_hevc_qp32_gop10.py --frame_ids 0 1 2 3 4 5 6 7 8 9
 
     """
+
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
@@ -119,6 +120,11 @@ class Trainer:
 
         if WANDB:
             wandb.watch(self.model, log="all", log_freq=self.args.i_log)
+
+    def _collect_perf_stats_for_wandb(self, frameid: int, global_step: int) -> Dict[str, float]:
+        if hasattr(self.model, "get_perf_stats_for_wandb"):
+            return self.model.get_perf_stats_for_wandb(frameid=frameid, global_step=global_step)
+        return {}
 
     def _build_model_and_opt(self):
         xyz_min = torch.tensor(self.cfg.data.xyz_min)
@@ -281,7 +287,8 @@ class Trainer:
                     cfg_train.weight_tv_k0/len(ro), step<cfg_train.tv_dense_before, fid_b)
 
         self.optimizer.step()
-        return loss, psnr_by_axis, avg_bpp, rec_loss, bpp_loss
+        current_fid = int(torch.unique(fid_b, sorted=True)[0].item())
+        return loss, psnr_by_axis, avg_bpp, rec_loss, bpp_loss, current_fid
 
     def _compute_loss(self, render, target, step, fid_batch, avg_bpp):
         cfg_t = self.cfg.fine_train
@@ -313,7 +320,7 @@ class Trainer:
             if (step+500) % 1000 == 0:
                 self.model.update_occupancy_cache()
             self._progressive_grow(step)
-            loss, plane_psnr_dict, avg_bpp, rec_loss, bpp_loss  = self._train_step(step)
+            loss, plane_psnr_dict, avg_bpp, rec_loss, bpp_loss, current_fid  = self._train_step(step)
 
             # LR decay
             decay = 0.1 ** (1 / (cfg_t.lrate_decay*1000)) # cfg_t.lrate_decay = 20
@@ -328,17 +335,22 @@ class Trainer:
                 # raise Exception("Stop here")
 
             if step % self.args.i_log == 0 and WANDB:
-                wandb.log({
+                log_dict = {
                     "train/psnr": float(psnr),
                     "train/loss": float(loss.item()),
                     "train/feature_plane_psnr": float(plane_psnr_dict['xy']),
+                    "train/feature_plane_psnr": float(plane_psnr_dict['xz']),
+                    "train/feature_plane_psnr": float(plane_psnr_dict['yz']),
                     "train/density_plane_psnr": float(plane_psnr_dict['density']),
-                    # "train/yz_plane_psnr": float(plane_psnr_dict['yz']),
                     "train/rec_loss": float(rec_loss.item()),
-                    "train/bpp_loss": float(bpp_loss.item()),
                     "train/avg_bpp": float(avg_bpp),
-                    "time/elapsed_s": dt,
-                }, step=step)
+                    "time/elapsed_s": float(dt),
+                }
+
+                # richer codec + render perf stats
+                log_dict.update(self._collect_perf_stats_for_wandb(frameid=current_fid, global_step=step))
+
+                wandb.log(log_dict, step=step)
 
             if step % cfg_t.save_every == 0 and step >= cfg_t.save_after:
                 self.model.save_checkpoints()

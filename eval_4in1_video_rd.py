@@ -179,6 +179,14 @@ python eval_4in1_video_rd.py \
   --ckpt_dir logs/dynerf_cut_roasted_beef/av1_qp32 \
   --config configs/dynerf_cut_roasted_beef/av1_qp32.py --dump_images
 
+python eval_4in1_video_rd.py \
+  --startframe 0 --numframe 10 \
+  --plane_packing_mode flatten --grid_packing_mode flatten \
+  --qmode absmax \
+  --codec av1 --qp 32 --gop 10 --fps 30 --pix-fmt yuv444p \
+  --ckpt_dir logs/dynerf_cut_roasted_beef/av1_qp32 \
+  --config configs/dynerf_cut_roasted_beef/av1_qp32.py
+
 
 """
 import os, io, sys, copy, json, argparse
@@ -203,6 +211,8 @@ from src.models.model_utils import (
     dens_to01, dens_from01,
     hevc_video_roundtrip, av1_video_roundtrip, vp9_video_roundtrip,
 )
+
+RENDER_WARMUP_VIEWS = 1
 
 # ---------------------------------------------------------------------------------
 # CLI
@@ -240,7 +250,7 @@ def parse_args():
 
     p.add_argument('--render_stride', type=int, default=1,
                help='Render every S-th frame from the selected frame_ids.')
-    p.add_argument('--render_max_frames', type=int, default=5,
+    p.add_argument('--render_max_frames', type=int, default=30,
                help='If >0, render at most this many frames (after stride).')
 
     # Misc
@@ -282,81 +292,108 @@ def load_everything_for_render(args, cfg):
 def render_viewpoints(model, render_poses, HW, Ks, ndc, render_kwargs,
                       gt_imgs=None, savedir=None, dump_images=False,
                       render_factor=0, render_video_flipy=False, render_video_rot90=0,
-                      eval_ssim=False, eval_lpips_alex=False, eval_lpips_vgg=False, frame_id=0, masks=None):
+                      eval_ssim=False, eval_lpips_alex=False, eval_lpips_vgg=False,
+                      frame_id=0, masks=None):
     from TeTriRF.lib import utils as Tutils
+    import time
+
     assert len(render_poses) == len(HW) == len(Ks)
-    if render_factor!=0:
-        HW = (np.copy(HW)/render_factor).astype(int)
-        Ks = np.copy(Ks); Ks[:, :2, :3] /= render_factor
+    if render_factor != 0:
+        HW = (np.copy(HW) / render_factor).astype(int)
+        Ks = np.copy(Ks)
+        Ks[:, :2, :3] /= render_factor
 
     rgbs, depths, bgmaps = [], [], []
     psnrs, ssims, lpips_a, lpips_v = [], [], [], []
 
+    total_render_sec = 0.0
+    num_rendered_views = 0
+
     for i, c2w in enumerate(tqdm(render_poses)):
-        H,W = HW[i]; K = Ks[i]; c2w = torch.Tensor(c2w)
+        H, W = HW[i]
+        K = Ks[i]
+        c2w = torch.Tensor(c2w)
+
         rays_o, rays_d, viewdirs = dvgo.get_rays_of_a_view(
-            H,W,K,c2w, ndc, inverse_y=render_kwargs['inverse_y'],
-            flip_x=cfg.data.flip_x, flip_y=cfg.data.flip_y)
-        keys = ['rgb_marched','depth','alphainv_last']
-        rays_o = rays_o.flatten(0,-2); rays_d = rays_d.flatten(0,-2); viewdirs = viewdirs.flatten(0,-2)
+            H, W, K, c2w, ndc,
+            inverse_y=render_kwargs['inverse_y'],
+            flip_x=cfg.data.flip_x,
+            flip_y=cfg.data.flip_y
+        )
+
+        keys = ['rgb_marched', 'depth', 'alphainv_last']
+        rays_o = rays_o.flatten(0, -2)
+        rays_d = rays_d.flatten(0, -2)
+        viewdirs = viewdirs.flatten(0, -2)
+
+        if rays_o.is_cuda:
+            torch.cuda.synchronize(rays_o.device)
+        t0 = time.perf_counter()
+
         render_chunks = [
-            {k:v for k,v in model(ro,rd,vd, **render_kwargs).items() if k in keys}
-            for ro,rd,vd in zip(rays_o.split(150480,0), rays_d.split(150480,0), viewdirs.split(150480,0))
+            {k: v for k, v in model(ro, rd, vd, **render_kwargs).items() if k in keys}
+            for ro, rd, vd in zip(
+                rays_o.split(150480, 0),
+                rays_d.split(150480, 0),
+                viewdirs.split(150480, 0)
+            )
         ]
-        render_out = {k: torch.cat([ret[k] for ret in render_chunks]).reshape(H,W,-1) for k in keys}
-        rgb, depth, bgmap = [render_out['rgb_marched'].cpu().numpy(),
-                             render_out['depth'].cpu().numpy(),
-                             render_out['alphainv_last'].cpu().numpy()]
-        rgbs.append(rgb); depths.append(depth); bgmaps.append(bgmap)
 
-        if gt_imgs is not None and render_factor==0:
+        if rays_o.is_cuda:
+            torch.cuda.synchronize(rays_o.device)
+        view_render_sec = time.perf_counter() - t0
+
+        total_render_sec += view_render_sec
+        num_rendered_views += 1
+
+        render_out = {
+            k: torch.cat([ret[k] for ret in render_chunks]).reshape(H, W, -1)
+            for k in keys
+        }
+
+        rgb, depth, bgmap = [
+            render_out['rgb_marched'].cpu().numpy(),
+            render_out['depth'].cpu().numpy(),
+            render_out['alphainv_last'].cpu().numpy()
+        ]
+        rgbs.append(rgb)
+        depths.append(depth)
+        bgmaps.append(bgmap)
+
+        if gt_imgs is not None and render_factor == 0:
             if masks is not None:
-                m = masks[i][...,0]>0.5
-                p = -10.0*np.log10(np.mean((rgb[m,:]-gt_imgs[i][m,:])**2))
+                m = masks[i][..., 0] > 0.5
+                p = -10.0 * np.log10(np.mean((rgb[m, :] - gt_imgs[i][m, :]) ** 2))
             else:
-                p = -10.0*np.log10(np.mean((rgb-gt_imgs[i])**2))
+                p = -10.0 * np.log10(np.mean((rgb - gt_imgs[i]) ** 2))
             psnrs.append(p)
-            if eval_ssim:        ssims.append(Tutils.rgb_ssim(rgb, gt_imgs[i], max_val=1))
-            if eval_lpips_alex:  lpips_a.append(Tutils.rgb_lpips(rgb, gt_imgs[i], net_name='alex', device=c2w.device))
-            if eval_lpips_vgg:   lpips_v.append(Tutils.rgb_lpips(rgb, gt_imgs[i], net_name='vgg', device=c2w.device))
 
-    res = {}
-    os.makedirs(savedir, exist_ok=True)
+            if eval_ssim:
+                ssims.append(Tutils.rgb_ssim(rgb, gt_imgs[i], max_val=1))
+            if eval_lpips_alex:
+                lpips_a.append(Tutils.rgb_lpips(rgb, gt_imgs[i], net_name='alex', device=c2w.device))
+            if eval_lpips_vgg:
+                lpips_v.append(Tutils.rgb_lpips(rgb, gt_imgs[i], net_name='vgg', device=c2w.device))
+
+    res = {
+        'frame_id': int(frame_id),
+        'render_num_views': int(num_rendered_views),
+        'render_total_sec': float(total_render_sec),
+    }
+
     if psnrs:
         res['psnr'] = float(np.mean(psnrs))
-        with open(os.path.join(savedir, f'{frame_id}_psnr.txt'), 'w') as f: f.write(f"{res['psnr']}\n")
-        if eval_ssim:
-            res['ssim'] = float(np.mean(ssims))
-            with open(os.path.join(savedir, f'{frame_id}_ssim.txt'), 'w') as f: f.write(f"{res['ssim']}\n")
-        if eval_lpips_vgg:
-            res['lpips'] = float(np.mean(lpips_v))
-            with open(os.path.join(savedir, f'{frame_id}_lpips.txt'), 'w') as f: f.write(f"{res['lpips']}\n")
+    if eval_ssim and len(ssims) > 0:
+        res['ssim'] = float(np.mean(ssims))
+    if eval_lpips_vgg and len(lpips_v) > 0:
+        res['lpips'] = float(np.mean(lpips_v))
 
-        if dump_images:
-            import imageio
-            # print(f"Length of RGB: {len(rgbs)}")
-            # raise Exception
-            for i in trange(len(rgbs)):
-                # save RGB
-                rgb8 = (np.clip(rgbs[i], 0, 1) * 255.0 + 0.5).astype(np.uint8)
-                imageio.imwrite(os.path.join(savedir, f'{frame_id}_{i}.png'), rgb8)
-
-                # # --- robust depth visualization: ensure 3 channels ---
-                # d = depths[i]
-                # # squeeze trailing singleton channel if present
-                # if d.ndim == 3 and d.shape[-1] == 1:
-                #     d = d[..., 0]
-                # # normalize to [0,1] and invert for visualization
-                # d_norm = 1.0 - d / (np.max(d) + 1e-8)
-                # d8 = (np.clip(d_norm, 0, 1) * 255.0 + 0.5).astype(np.uint8)
-
-                # # make 3 channels for imageio/pillow (HxW -> HxWx3, or HxWx1 -> HxWx3)
-                # if d8.ndim == 2:
-                #     d8 = np.repeat(d8[..., None], 3, axis=-1)
-                # elif d8.ndim == 3 and d8.shape[-1] == 1:
-                #     d8 = np.repeat(d8, 3, axis=-1)
-
-                # imageio.imwrite(os.path.join(savedir, f'{frame_id}_{i}_depth.png'), d8)
+    if dump_images:
+        os.makedirs(savedir, exist_ok=True)
+        import imageio
+        for i in trange(len(rgbs)):
+            rgb8 = (np.clip(rgbs[i], 0, 1) * 255.0 + 0.5).astype(np.uint8)
+            imageio.imwrite(os.path.join(savedir, f'{frame_id}_{i}.png'), rgb8)
 
     return res
 
@@ -496,7 +533,7 @@ if __name__ == "__main__":
     render_frame_ids = frame_ids[::max(1, args.render_stride)]
     if args.render_max_frames > 0:
         render_frame_ids = render_frame_ids[:args.render_max_frames]
-    render_frame_ids = render_frame_ids[:1] # we only test the first frame
+    # render_frame_ids = render_frame_ids[:1] # we only test the first frame
 
     # Output root
     out_root = os.path.abspath(os.path.join(args.ckpt_dir, '4in1test'))
@@ -677,10 +714,9 @@ if __name__ == "__main__":
     )
 
     overall_metrics = []
-    agg_psnr, agg_ssim, agg_lpips = [], [], []
+
     for fid in render_frame_ids:
         ti = fid2idx[fid]
-        print
         ckpt_path = os.path.join(args.ckpt_dir, f"fine_last_{fid}.tar")
         orig = torch.load(ckpt_path, map_location='cpu', weights_only=False)
         st = orig['model_state_dict'].copy()
@@ -691,16 +727,14 @@ if __name__ == "__main__":
         model_class = dmpigo.DirectMPIGO if cfg.data.ndc else dvgo.DirectVoxGO
         model = model_class(**orig['model_kwargs']).to(device)
         model.load_state_dict(st, strict=False)
-        model.reset_occupancy_cache()  # now safe: default tensor type set to CUDA if available
+        model.reset_occupancy_cache()
         model.eval()
 
         testsavedir = render_out
         i_test = data_dict['i_test']
         frame_ids_all = data_dict['frame_ids']
-        id_mask = (frame_ids_all==fid)[i_test].numpy()
+        id_mask = (frame_ids_all == fid)[i_test].numpy()
         t_test = np.array(i_test)[id_mask]
-        # print(f"t_test:{t_test}")
-        # raise Exception
 
         masks = None
         if data_dict['masks'] is not None:
@@ -714,16 +748,15 @@ if __name__ == "__main__":
             ndc=cfg.data.ndc,
             render_kwargs=render_kwargs,
             gt_imgs=[data_dict['images'][i].cpu().numpy() for i in t_test],
-            savedir=testsavedir, dump_images=args.dump_images,
-            eval_ssim=args.eval_ssim, eval_lpips_alex=args.eval_lpips_alex, eval_lpips_vgg=args.eval_lpips_vgg,
-            frame_id=fid, masks=None
+            savedir=testsavedir,
+            dump_images=args.dump_images,
+            eval_ssim=args.eval_ssim,
+            eval_lpips_alex=args.eval_lpips_alex,
+            eval_lpips_vgg=args.eval_lpips_vgg,
+            frame_id=fid,
+            masks=masks,
         )
-        overall_metrics.append((fid, res))
-        if isinstance(res, dict):
-            if 'psnr' in res and np.isfinite(res['psnr']):    agg_psnr.append(float(res['psnr']))
-            if 'ssim' in res and np.isfinite(res.get('ssim', np.nan)):   agg_ssim.append(float(res['ssim']))
-            if 'lpips' in res and np.isfinite(res.get('lpips', np.nan)): agg_lpips.append(float(res['lpips']))
-
+        overall_metrics.append(res)
     # ====== Final: write encoded_bits.txt with per-stream + total ======
     bits_txt = os.path.join(out_root, "encoded_bits.txt")
     with open(bits_txt, "w") as f:
@@ -739,20 +772,88 @@ if __name__ == "__main__":
         f.write(f"TOTAL: total_bits={int(total_bits)}  bpp={overall_bpp:.8f}\n")
     print(f"[OK] wrote {bits_txt}")
 
-    for fid, res in overall_metrics:
-        if res:
-            print(f"[render_test] frame {fid}: " +
-                  ("PSNR=%.3f " % res.get('psnr', float('nan'))) +
-                  ("SSIM=%.4f " % res.get('ssim', float('nan')) if 'ssim' in res else "") +
-                  ("LPIPS=%.4f" % res.get('lpips', float('nan')) if 'lpips' in res else ""))
-            
-    def _maybe_write_mean(fname: str, vals: List[float]):
-        if len(vals) > 0:
-            with open(os.path.join(out_root, fname), "w") as f:
-                f.write(f"{np.mean(vals):.6f}\n")
+    # ---------------------------------------------------------
+    # Global aggregation with warm-up applied across ALL views
+    # ---------------------------------------------------------
+    total_views_all = 0
+    total_render_sec_all = 0.0
+    per_frame_timing = []   # list of (num_views, total_sec)
 
-    _maybe_write_mean("mean_PSNR.txt",  agg_psnr)
-    _maybe_write_mean("mean_SSIM.txt",  agg_ssim)
-    _maybe_write_mean("mean_LPIPS.txt", agg_lpips)
+    agg_psnr, agg_ssim, agg_lpips = [], [], []
+
+    for res in overall_metrics:
+        if not isinstance(res, dict):
+            continue
+
+        if 'psnr' in res and np.isfinite(res['psnr']):
+            agg_psnr.append(float(res['psnr']))
+        if 'ssim' in res and np.isfinite(res.get('ssim', np.nan)):
+            agg_ssim.append(float(res['ssim']))
+        if 'lpips' in res and np.isfinite(res.get('lpips', np.nan)):
+            agg_lpips.append(float(res['lpips']))
+
+        nv = int(res.get('render_num_views', 0))
+        ts = float(res.get('render_total_sec', 0.0))
+        per_frame_timing.append((nv, ts))
+        total_views_all += nv
+        total_render_sec_all += ts
+
+    # Apply global warm-up across all rendered views
+    warmup_left = int(RENDER_WARMUP_VIEWS)
+    timed_views_global = 0
+    timed_sec_global = 0.0
+
+    for nv, ts in per_frame_timing:
+        if nv <= 0:
+            continue
+
+        if warmup_left >= nv:
+            warmup_left -= nv
+            continue
+
+        # assume per-view time is uniform within the frame's rendered views
+        sec_per_view_frame = ts / nv
+        used_views = nv - warmup_left
+        timed_views_global += used_views
+        timed_sec_global += used_views * sec_per_view_frame
+        warmup_left = 0
+
+    summary = {
+        "num_rendered_frames": int(len(overall_metrics)),
+        "render_warmup_views": int(RENDER_WARMUP_VIEWS),
+        "render_total_views": int(total_views_all),
+        "render_timed_views": int(timed_views_global),
+        "render_total_sec_after_warmup": float(timed_sec_global) if timed_views_global > 0 else float('nan'),
+        "render_sec_per_view_after_warmup": float(timed_sec_global / timed_views_global) if timed_views_global > 0 else float('nan'),
+        "render_fps_after_warmup": float(timed_views_global / max(timed_sec_global, 1e-12)) if timed_views_global > 0 else float('nan'),
+        "mean_psnr": float(np.mean(agg_psnr)) if len(agg_psnr) > 0 else float('nan'),
+        "mean_ssim": float(np.mean(agg_ssim)) if len(agg_ssim) > 0 else float('nan'),
+        "mean_lpips": float(np.mean(agg_lpips)) if len(agg_lpips) > 0 else float('nan'),
+    }
+
+    summary_txt = os.path.join(out_root, "summary_metrics.txt")
+    with open(summary_txt, "w") as f:
+        f.write(f"num_rendered_frames: {summary['num_rendered_frames']}\n")
+        f.write(f"render_warmup_views: {summary['render_warmup_views']}\n")
+        f.write(f"render_total_views: {summary['render_total_views']}\n")
+        f.write(f"render_timed_views: {summary['render_timed_views']}\n")
+        f.write(f"render_total_sec_after_warmup: {summary['render_total_sec_after_warmup']}\n")
+        f.write(f"render_sec_per_view_after_warmup: {summary['render_sec_per_view_after_warmup']}\n")
+        f.write(f"render_fps_after_warmup: {summary['render_fps_after_warmup']}\n")
+        f.write(f"mean_psnr: {summary['mean_psnr']}\n")
+        f.write(f"mean_ssim: {summary['mean_ssim']}\n")
+        f.write(f"mean_lpips: {summary['mean_lpips']}\n")
+
+    print(f"[OK] wrote {summary_txt}")
+    print(
+        f"[summary] "
+        f"PSNR={summary['mean_psnr']:.3f} "
+        f"SSIM={summary['mean_ssim']:.4f} "
+        f"LPIPS={summary['mean_lpips']:.4f} "
+        f"RenderFPS={summary['render_fps_after_warmup']:.2f}"
+    )
 
     print("[DONE] All outputs in:", out_root)
+
+
+
